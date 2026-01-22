@@ -1,0 +1,12 @@
+# 10 Jobs in project monitoring
+cupdate-lb-targets Adiciona VM ao  Pool do Load Balancer
+delete-targets Apaga as instancias de aplicação 
+atualiza-nodes-grafana Atualiza nods do grafana 
+create-lb-cpen5-se Criar Load Balancer - CPEN5-SE
+a3b5cfa6-fc27-4006-bc2e-5a2b5fed381c Instala prometheus 
+8e0c9550-e357-47f1-b0a5-a04ccf43334f Install Elasticsearch
+remove-instances-and-update-grafana Remove-instances-and-update-grafana
+restaura-targets Restaura snapshot 
+add-nodes-in-app-pool create node and add in load balancer and monitoring stack
+903d392e-398e-46e1-922d-17cc26e2ee75 performance/perf-run-on-node
+
