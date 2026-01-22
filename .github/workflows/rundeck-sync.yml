@@ -21,14 +21,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y default-jre unzip
 
-      - name: Install Rundeck CLI (rd)
+    - name: Install Rundeck CLI (rd)
+        env:
+          RD_VERSION: "2.0.9"
         run: |
           set -euo pipefail
-          RD_VERSION="2.0.9"
-          curl -L -o rd.zip "https://github.com/rundeck/rundeck-cli/releases/download/v${RD_VERSION}/rundeck-cli-${RD_VERSION}.zip"
-          unzip -q rd.zip -d rdcli
-          sudo mv rdcli/rd /usr/local/bin/rd
-          sudo chmod +x /usr/local/bin/rd
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+          # Descobre a URL do asset linux-amd64 do release
+          url="$(curl -sL "https://api.github.com/repos/rundeck/rundeck-cli/releases/tags/v${RD_VERSION}" \
+            | jq -r '.assets[] | select(.name | test("linux.*amd64|linux.*x86_64|linux.*64|rd.*linux"; "i")) | .browser_download_url' \
+            | head -n1)"
+
+          if [ -z "${url}" ] || [ "${url}" = "null" ]; then
+            echo "Não achei asset do rd no release v${RD_VERSION}."
+            echo "Listando assets disponíveis:"
+            curl -sL "https://api.github.com/repos/rundeck/rundeck-cli/releases/tags/v${RD_VERSION}" \
+              | jq -r '.assets[].name'
+            exit 1
+          fi
+
+          echo "Baixando: ${url}"
+          curl -fL -o rd "${url}"
+          sudo install -m 0755 rd /usr/local/bin/rd
+
           rd --version
 
       - name: Configure rd env
