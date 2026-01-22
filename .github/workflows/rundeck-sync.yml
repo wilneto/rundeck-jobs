@@ -1,0 +1,46 @@
+name: Sync Rundeck Jobs (Git manda)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "LBaaS/jobs/**"
+      - "Mgc-backup/jobs/**"
+      - "PerformanceTest/jobs/**"
+      - "monitoring/jobs/**"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Java (rd precisa)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jre
+
+      - name: Install Rundeck CLI (rd)
+        run: |
+          curl -L -o rd.deb https://github.com/rundeck/rundeck-cli/releases/download/v2.0.9/rd-2.0.9.deb
+          sudo dpkg -i rd.deb || sudo apt-get -f install -y
+
+      - name: Configure rd env
+        run: |
+          echo "RD_URL=${{ secrets.RD_URL }}" >> $GITHUB_ENV
+          echo "RD_TOKEN=${{ secrets.RD_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Sync jobs to Rundeck (update)
+        run: |
+          set -euo pipefail
+          for project in LBaaS Mgc-backup PerformanceTest monitoring; do
+            echo "==> Project: $project"
+            for f in "$project"/jobs/*.yaml; do
+              [ -e "$f" ] || continue
+              echo "   -> $f"
+              rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
+            done
+          done
