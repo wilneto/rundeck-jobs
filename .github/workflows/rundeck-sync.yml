@@ -13,25 +13,28 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Java (rd precisa)
         run: |
           sudo apt-get update
-          sudo apt-get install -y default-jre
+          sudo apt-get install -y default-jre unzip
 
       - name: Install Rundeck CLI (rd)
         run: |
-          curl -L -o rd.deb https://github.com/rundeck/rundeck-cli/releases/download/v2.0.9/rd-2.0.9.deb
-          sudo dpkg -i rd.deb || sudo apt-get -f install -y
+          set -euo pipefail
+          RD_VERSION="2.0.9"
+          curl -L -o rd.zip "https://github.com/rundeck/rundeck-cli/releases/download/v${RD_VERSION}/rundeck-cli-${RD_VERSION}.zip"
+          unzip -q rd.zip -d rdcli
+          sudo mv rdcli/rd /usr/local/bin/rd
+          sudo chmod +x /usr/local/bin/rd
+          rd --version
 
       - name: Configure rd env
         run: |
-          echo "RD_URL=${{ secrets.RD_URL }}" >> $GITHUB_ENV
-          echo "RD_TOKEN=${{ secrets.RD_TOKEN }}" >> $GITHUB_ENV
+          echo "RD_URL=${{ secrets.RUNDECK_URL }}" >> $GITHUB_ENV
+          echo "RD_TOKEN=${{ secrets.RUNDECK_TOKEN }}" >> $GITHUB_ENV
 
       - name: Sync jobs to Rundeck (update)
         run: |
