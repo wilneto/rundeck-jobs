@@ -32,14 +32,48 @@ jobs:
           echo "RD_URL=${{ secrets.RUNDECK_URL }}" >> $GITHUB_ENV
           echo "RD_TOKEN=${{ secrets.RUNDECK_TOKEN }}" >> $GITHUB_ENV
 
-      - name: Sync jobs to Rundeck (update)
+      - name: Sync only changed jobs to Rundeck
         run: |
           set -euo pipefail
-          for project in LBaaS Mgc-backup PerformanceTest monitoring; do
-            echo "==> Project: $project"
-            for f in "$project"/jobs/*.yaml; do
-              [ -e "$f" ] || continue
-              echo "   -> $f"
-              rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
-            done
+      
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+      
+          echo "Diff range: $BEFORE..$AFTER"
+      
+          # Em alguns casos (primeiro push / force push), BEFORE pode vir vazio ou 0000...
+          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "BEFORE inválido, usando HEAD~1 como fallback"
+            BEFORE="$(git rev-parse HEAD~1)"
+          fi
+      
+          mapfile -t files < <(
+            git diff --name-only "$BEFORE" "$AFTER" \
+              | grep -E '^(LBaaS|Mgc-backup|PerformanceTest|monitoring)/jobs/.*\.ya?ml$' || true
+          )
+      
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "Nenhum job YAML alterado, nada a fazer."
+            exit 0
+          fi
+      
+          echo "Arquivos alterados:"
+          printf ' - %s\n' "${files[@]}"
+      
+          for f in "${files[@]}"; do
+            project="$(cut -d/ -f1 <<<"$f")"
+            echo "==> Update: project=$project file=$f"
+            rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
           done
+
+#      - name: Sync jobs to Rundeck (update)
+#        run: |
+#          set -euo pipefail
+#          for project in LBaaS Mgc-backup PerformanceTest monitoring; do
+#            echo "==> Project: $project"
+#            for f in "$project"/jobs/*.yaml; do
+#              [ -e "$f" ] || continue
+#              echo "   -> $f"
+#              rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
+#            done
+#          done
