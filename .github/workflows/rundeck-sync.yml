@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Rundeck CLI (rd)
         run: |
-          sudo curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh | os=any dist=any bash 
+          sudo bash -c 'os=any dist=any bash <(curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh)'
           sudo apt-get install rundeck-cli
           rd --version
 
