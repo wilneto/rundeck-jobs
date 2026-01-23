@@ -30,7 +30,9 @@
     keepgoing: false
     strategy: node-first
     commands:
-      - exec: |
+      - script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
           echo "====================================="
           echo "Job version:"
           echo "Branch : __GIT_BRANCH__"
@@ -60,10 +62,10 @@
           fi
 
           echo "🔎 Listando snapshots..."
-          mgc virtual-machine snapshots list --api-key="$APIKEY" -o yaml \
-            | yq -r '.snapshots[] | @base64' \
+          mgc virtual-machine snapshots list --api-key="$APIKEY" -o json \
+            | jq -r '.snapshots[] | @base64' \
             | while read -r row; do
-                _jq() { echo "$row" | base64 -d | yq -r "$1"; }
+                _jq() { echo "$row" | base64 -d | jq -r "$1"; }
 
                 SNAP_ID="$(_jq '.id')"
                 SNAP_NAME="$(_jq '.name')"
@@ -72,7 +74,6 @@
                 STATUS="$(_jq '.status')"
                 STATE="$(_jq '.state')"
 
-                # só mexe em snapshot "ok"
                 if [[ "$STATUS" != "completed" || "$STATE" != "available" ]]; then
                   echo "⏭️ Pulando (status/state): $SNAP_NAME ($SNAP_ID) status=$STATUS state=$STATE"
                   continue
@@ -95,5 +96,4 @@
                   echo "✅ Mantendo:  $SNAP_NAME ($SNAP_ID) age=${AGE_DAYS}d (<= ${RETENTION_DAYS}d)"
                 fi
               done
-
           echo "🏁 Finalizado."
