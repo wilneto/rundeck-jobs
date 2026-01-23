@@ -2,7 +2,7 @@
   description: test
   executionEnabled: true
   id: 12346523-a3c4-exgh-ijkl-1234657890et
-  loglevel: INFO
+  loglevel: DEBUG
   name: test_job
   nodeFilterEditable: true
   nodefilters:
