@@ -3,7 +3,7 @@
   executionEnabled: true
   id: 12346523-a3c4-exgh-ijkl-1234657890et
   loglevel: INFO
-  name: test_job
+  name: test_job_will
   nodeFilterEditable: true
   nodefilters:
     dispatch:
