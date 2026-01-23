@@ -41,11 +41,14 @@ jobs:
       
           echo "Diff range: $BEFORE..$AFTER"
       
-          # Em alguns casos (primeiro push / force push), BEFORE pode vir vazio ou 0000...
           if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
             echo "BEFORE inválido, usando HEAD~1 como fallback"
             BEFORE="$(git rev-parse HEAD~1)"
           fi
+      
+          # 🔒 Blindagem contra shallow clone
+          git cat-file -e "${AFTER}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${AFTER}"
+          git cat-file -e "${BEFORE}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${BEFORE}"
       
           mapfile -t files < <(
             git diff --name-only "$BEFORE" "$AFTER" \
