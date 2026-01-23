@@ -1,0 +1,97 @@
+- defaultTab: nodes
+  description: "Remove snapshots antigos de VMs na Magalu Cloud com política de retenção"
+  executionEnabled: true
+  id: mgc-backup-cleanup-001
+  loglevel: INFO
+  name: "MGC - Instance Backup Cleanup"
+  nodeFilterEditable: false
+
+  options:
+    - name: API_KEY
+      label: MgcApiKey
+      description: "API Key da Magalu Cloud"
+      required: true
+      secure: true
+      valueExposed: true
+
+    - name: PREFIX_VM
+      label: Prefixo da VM
+      description: |
+        Nome ou prefixo da VM.
+        Se vazio, considera todas (exceto k8s-*).
+      required: false
+
+    - name: RETENTION_DAYS
+      label: Retenção (dias)
+      description: |
+        Quantidade de dias de retenção dos snapshots.
+        Se vazio, TODOS os snapshots serão removidos.
+      required: false
+
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export MGC_API_KEY="${RD_OPTION_API_KEY}"
+          PREFIX_VM="${RD_OPTION_PREFIX_VM:-}"
+          RETENTION_DAYS="${RD_OPTION_RETENTION_DAYS:-}"
+
+          echo "🔐 Autenticando na Magalu Cloud..."
+          mgc auth login --api-key "$MGC_API_KEY" >/dev/null
+
+          if [[ -n "$RETENTION_DAYS" ]]; then
+            echo "📆 Retenção definida: $RETENTION_DAYS dias"
+            CUTOFF_DATE=$(date -u -d "-$RETENTION_DAYS days" +"%s")
+          else
+            echo "⚠️ Nenhuma retenção definida — TODOS os snapshots serão removidos"
+          fi
+
+          echo "📡 Buscando VMs..."
+          mgc virtual-machine instances list -o json | jq -c '.instances[]' | while read -r vm; do
+            VM_ID=$(echo "$vm" | jq -r '.id')
+            VM_NAME=$(echo "$vm" | jq -r '.name')
+
+            # Ignora VMs k8s-
+            if [[ "$VM_NAME" == k8s-* ]]; then
+              continue
+            fi
+
+            # Filtro por prefixo
+            if [[ -n "$PREFIX_VM" && "$VM_NAME" != *"$PREFIX_VM"* ]]; then
+              continue
+            fi
+
+            echo ""
+            echo "🖥️ VM: $VM_NAME ($VM_ID)"
+            echo "🔍 Listando snapshots..."
+
+            mgc virtual-machine snapshots list --instance-id "$VM_ID" -o json \
+            | jq -c '.snapshots[]?' | while read -r snap; do
+                SNAP_ID=$(echo "$snap" | jq -r '.id')
+                SNAP_NAME=$(echo "$snap" | jq -r '.name')
+                SNAP_DATE=$(echo "$snap" | jq -r '.created_at')
+                SNAP_TS=$(date -u -d "$SNAP_DATE" +"%s")
+
+                DELETE=false
+
+                if [[ -z "$RETENTION_DAYS" ]]; then
+                  DELETE=true
+                elif [[ "$SNAP_TS" -lt "$CUTOFF_DATE" ]]; then
+                  DELETE=true
+                fi
+
+                if [[ "$DELETE" == true ]]; then
+                  echo "🗑️ Removendo snapshot: $SNAP_NAME ($SNAP_ID)"
+                  mgc virtual-machine snapshots delete "$SNAP_ID" --yes
+                else
+                  echo "✅ Mantido: $SNAP_NAME ($SNAP_DATE)"
+                fi
+            done
+          done
+
+          echo ""
+          echo "🎯 Limpeza de snapshots finalizada com sucesso."
