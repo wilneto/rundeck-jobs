@@ -4,10 +4,9 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "LBaaS/jobs/**"
-      - "Mgc-backup/jobs/**"
-      - "PerformanceTest/jobs/**"
-      - "monitoring/jobs/**"
+      - "**/jobs/**/*.yml"
+      - "**/jobs/**/*.yaml"
+      - ".github/workflows/rundeck-sync.yml"
   workflow_dispatch:
 
 jobs:

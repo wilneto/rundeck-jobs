@@ -2,7 +2,7 @@
   description: ''
   executionEnabled: true
   id: edf09d97-6e09-47a2-9ea5-ab022b5af265
-  loglevel: INFO
+  loglevel: DEBUG
   name: MGC -  Instance Backup
   nodeFilterEditable: false
   options:
