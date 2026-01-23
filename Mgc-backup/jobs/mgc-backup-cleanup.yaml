@@ -51,6 +51,7 @@
           fi
 
           echo "📡 Buscando VMs..."
+          echo "apenas para test " "$APIKEY"
           mgc virtual-machine instances list --api-key="$APIKEY" -o json | jq -c '.instances[]' | while read -r vm; do
             VM_ID=$(echo "$vm" | jq -r '.id')
             VM_NAME=$(echo "$vm" | jq -r '.name')
