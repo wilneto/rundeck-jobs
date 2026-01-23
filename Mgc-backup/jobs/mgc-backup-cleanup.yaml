@@ -51,7 +51,7 @@
           fi
 
           echo "📡 Buscando VMs..."
-          mgc virtual-machine instances list -o json | jq -c '.instances[]' | while read -r vm; do
+          mgc virtual-machine instances list --api-key="$APIKEY" -o json | jq -c '.instances[]' | while read -r vm; do
             VM_ID=$(echo "$vm" | jq -r '.id')
             VM_NAME=$(echo "$vm" | jq -r '.name')
 
@@ -69,7 +69,7 @@
             echo "🖥️ VM: $VM_NAME ($VM_ID)"
             echo "🔍 Listando snapshots..."
 
-            mgc virtual-machine snapshots list --instance-id "$VM_ID" -o json \
+            mgc virtual-machine snapshots list --instance-id "$VM_ID" --api-key="$APIKEY" -o json \
             | jq -c '.snapshots[]?' | while read -r snap; do
                 SNAP_ID=$(echo "$snap" | jq -r '.id')
                 SNAP_NAME=$(echo "$snap" | jq -r '.name')
@@ -86,7 +86,7 @@
 
                 if [[ "$DELETE" == true ]]; then
                   echo "🗑️ Removendo snapshot: $SNAP_NAME ($SNAP_ID)"
-                  mgc virtual-machine snapshots delete "$SNAP_ID" --yes
+                  mgc virtual-machine snapshots delete "$SNAP_ID" --api-key="$APIKEY" --yes
                 else
                   echo "✅ Mantido: $SNAP_NAME ($SNAP_DATE)"
                 fi
