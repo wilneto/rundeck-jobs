@@ -67,15 +67,3 @@ jobs:
             echo "==> Update: project=$project file=$f"
             rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
           done
-
-#      - name: Sync jobs to Rundeck (update)
-#        run: |
-#          set -euo pipefail
-#          for project in LBaaS Mgc-backup PerformanceTest monitoring; do
-#            echo "==> Project: $project"
-#            for f in "$project"/jobs/*.yaml; do
-#              [ -e "$f" ] || continue
-#              echo "   -> $f"
-#              rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
-#            done
-#          done
