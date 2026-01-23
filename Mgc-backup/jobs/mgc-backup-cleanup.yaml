@@ -40,8 +40,8 @@
           PREFIX_VM="${RD_OPTION_PREFIX_VM:-}"
           RETENTION_DAYS="${RD_OPTION_RETENTION_DAYS:-}"
 
-          echo "🔐 Autenticando na Magalu Cloud..."
-          mgc auth login --api-key "$MGC_API_KEY" >/dev/null
+          #echo "🔐 Autenticando na Magalu Cloud..."
+          #mgc auth login --api-key "$MGC_API_KEY" >/dev/null
 
           if [[ -n "$RETENTION_DAYS" ]]; then
             echo "📆 Retenção definida: $RETENTION_DAYS dias"
