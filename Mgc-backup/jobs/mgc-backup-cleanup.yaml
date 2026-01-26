@@ -8,7 +8,7 @@
   executionEnabled: true
   id: mgc-snapshot-cleanup-001
   loglevel: INFO
-  name: "MGC - Snapshot Cleanup (Retention Days)"
+  name: "MGC - Snapshot Cleanup (Retention Days - test)"
   nodeFilterEditable: false
 
   options:
