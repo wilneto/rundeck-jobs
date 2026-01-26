@@ -97,7 +97,7 @@
 
                 if [[ "$DELETE" == true ]]; then
                   echo "🗑️ Deletando: $SNAP_NAME ($SNAP_ID) instance=$INSTANCE_ID created=$CREATED_AT age=${AGE_DAYS}d"
-                  mgc virtual-machine snapshots delete "$SNAP_ID" --api-key="$APIKEY" -no-confirm 
+                  mgc virtual-machine snapshots delete "$SNAP_ID" --api-key="$APIKEY" --no-confirm 
                 else
                   echo "✅ Mantendo:  $SNAP_NAME ($SNAP_ID) age=${AGE_DAYS}d (<= ${RETENTION_DAYS}d)"
                 fi
