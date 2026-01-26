@@ -8,7 +8,7 @@
   executionEnabled: true
   id: mgc-snapshot-cleanup-001
   loglevel: INFO
-  name: "MGC - Snapshot Cleanup (Retention Days)"
+  name: "MGC - Snapshot Cleanup (Retention Days - test)"
   nodeFilterEditable: false
 
   options:
@@ -60,10 +60,16 @@
           else
             echo "⚠️ RETENTION_DAYS vazio: vou remover TODOS os snapshots listados."
           fi
-
+          
           echo "🔎 Listando snapshots..."
-          mgc virtual-machine snapshots list --api-key="$APIKEY" -o json \
-            | jq -r '.snapshots[] | @base64' \
+          OUT="$(mgc virtual-machine snapshots list --api-key="$APIKEY" -o yaml --raw)"
+          
+          # Detecta automaticamente onde está a lista (snapshots ou results)
+          LIST_PATH='.snapshots'
+          echo "$OUT" | yq -e '.snapshots' >/dev/null 2>&1 || LIST_PATH='.results'
+          
+          echo "$OUT" \
+            | yq -r "${LIST_PATH}[] | @base64" \
             | while read -r row; do
                 _jq() { echo "$row" | base64 -d | jq -r "$1"; }
 
