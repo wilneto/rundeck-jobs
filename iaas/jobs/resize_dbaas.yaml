@@ -10,3 +10,19 @@
   loglevel: INFO
   name: "MGC - DBaaS disck recise"
   nodeFilterEditable: false
+
+  options:
+    - name: API_KEY
+      label: MgcApiKey
+      description: "API Key para autenticar na Magalu Cloud"
+      required: true
+      secure: true
+      valueExposed: true
+
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - script: |
+          #!/usr/bin/env bash
+          echo "testando script"
