@@ -130,15 +130,12 @@ rd jobs export -p <projeto> -f yaml > modelo.yaml
 
 ### 🔐 Por que não usar API para criar projetos?
 
-Decisão arquitetural consciente:
-	•	Evita permissões administrativas no token
-	•	Evita dependência de versão da API
-	•	Evita drift silencioso
-	•	Mantém blast radius mínimo
-	•	Separa claramente infra de código
+Decisão arquitetural consciente:  
+	•	Evita permissões administrativas no token  
+	•	Evita dependência de versão da API  
+	•	Evita drift silencioso  
+	•	Mantém blast radius mínimo  
+	•	Separa claramente infra de código  
 
 Projeto é criado uma vez.
 Job evolui sempre.
-
-⸻
-
