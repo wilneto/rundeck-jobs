@@ -23,7 +23,7 @@ jobs:
       - name: Install Rundeck CLI (rd)
         run: |
           sudo bash -c 'os=any dist=any bash <(curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh)'
-          sudo apt-get install rundeck-cli
+          sudo apt-get install -y rundeck-cli
           rd --version
 
       - name: Configure rd env
@@ -31,53 +31,17 @@ jobs:
           echo "RD_URL=${{ secrets.RUNDECK_URL }}" >> $GITHUB_ENV
           echo "RD_TOKEN=${{ secrets.RUNDECK_TOKEN }}" >> $GITHUB_ENV
 
-      - name: Sync only changed jobs to Rundeck
-        run: |
-          set -euo pipefail
-      
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-      
-          echo "Diff range: $BEFORE..$AFTER"
-      
-          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
-            echo "BEFORE inválido, usando HEAD~1 como fallback"
-            BEFORE="$(git rev-parse HEAD~1)"
-          fi
-      
-          # 🔒 Blindagem contra shallow clone
-          git cat-file -e "${AFTER}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${AFTER}"
-          git cat-file -e "${BEFORE}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${BEFORE}"
-      
-          mapfile -t files < <(
-            git diff --name-only "$BEFORE" "$AFTER" \
-              | grep -E '^(LBaaS|Mgc-backup|PerformanceTest|monitoring)/jobs/.*\.ya?ml$' || true
-          )
-      
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "Nenhum job YAML alterado, nada a fazer."
-            exit 0
-          fi
-      
-          echo "Arquivos alterados:"
-          printf ' - %s\n' "${files[@]}"
-      
-          for f in "${files[@]}"; do
-            project="$(cut -d/ -f1 <<<"$f")"
-            echo "==> Update: project=$project file=$f"
-            rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
-          done
-
-      - name: Sync only changed jobs to Rundeck
+      - name: Sync only changed jobs to Rundeck (CLI only)
+        shell: bash
         run: |
           set -euo pipefail
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
-          echo "Diff range: $BEFORE..$AFTER"
+          echo "Diff range: ${BEFORE}..${AFTER}"
 
-          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+          if [ -z "${BEFORE}" ] || [[ "${BEFORE}" =~ ^0+$ ]]; then
             echo "BEFORE inválido, usando HEAD~1 como fallback"
             BEFORE="$(git rev-parse HEAD~1)"
           fi
@@ -88,7 +52,7 @@ jobs:
 
           # Pega qualquer coisa no formato: <project>/jobs/**.yml|yaml
           mapfile -t files < <(
-            git diff --name-only "$BEFORE" "$AFTER" \
+            git diff --name-only "${BEFORE}" "${AFTER}" \
               | grep -E '^[^/]+/jobs/.*\.ya?ml$' || true
           )
 
@@ -100,40 +64,19 @@ jobs:
           echo "Arquivos alterados:"
           printf ' - %s\n' "${files[@]}"
 
-          # Detecta versão da API (ajuste se você já souber a sua)
-          API_VER="${RUNDECK_API_VERSION:-45}"
-
-          ensure_project() {
-            local project="$1"
-            local base="${RD_URL%/}"
-            local token="$RD_TOKEN"
-
-            echo "🔎 Verificando projeto '$project' no Rundeck..."
-            if curl -fsS \
-              -H "X-Rundeck-Auth-Token: ${token}" \
-              -H "Accept: application/json" \
-              "${base}/api/${API_VER}/project/${project}" >/dev/null; then
-              echo "✅ Projeto '$project' já existe."
-              return 0
-            fi
-
-            echo "🧱 Projeto '$project' não existe. Criando..."
-            # Criação via API: POST /api/<ver>/projects
-            # Config mínima: descrição (o Rundeck completa o resto com defaults)
-            curl -fsS -X POST \
-              -H "X-Rundeck-Auth-Token: ${token}" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "${base}/api/${API_VER}/projects" \
-              -d "{\"name\":\"${project}\",\"config\":{\"project.description\":\"Managed by GitHub Actions\"}}"
-
-            echo "✅ Projeto '$project' criado."
-          }
+          # Cache da lista de projetos existentes (evita bater no Rundeck toda hora)
+          mapfile -t existing_projects < <(rd projects list | awk '{print $1}')
+          projects_text="$(printf "%s\n" "${existing_projects[@]}")"
 
           for f in "${files[@]}"; do
-            project="$(cut -d/ -f1 <<<"$f")"
-            echo "==> Sync: project=$project file=$f"
+            project="$(cut -d/ -f1 <<<"${f}")"
+            echo "==> Update: project=${project} file=${f}"
 
-            ensure_project "$project"
+            if ! grep -qx "${project}" <<<"${projects_text}"; then
+              echo "❌ Projeto '${project}' não existe no Rundeck."
+              echo "➡️ Crie o projeto '${project}' (UI/Bootstrap) e faça push novamente para sincronizar os jobs."
+              exit 1
+            fi
 
-            rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
+            rd jobs load -p "${project}" -F yaml -f "${f}" --duplicate update
+          done
