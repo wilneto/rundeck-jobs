@@ -67,3 +67,73 @@ jobs:
             echo "==> Update: project=$project file=$f"
             rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
           done
+
+      - name: Sync only changed jobs to Rundeck
+        run: |
+          set -euo pipefail
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          echo "Diff range: $BEFORE..$AFTER"
+
+          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "BEFORE inválido, usando HEAD~1 como fallback"
+            BEFORE="$(git rev-parse HEAD~1)"
+          fi
+
+          # 🔒 Blindagem contra shallow clone
+          git cat-file -e "${AFTER}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${AFTER}"
+          git cat-file -e "${BEFORE}^{commit}" 2>/dev/null || git fetch --no-tags --prune origin "${BEFORE}"
+
+          # Pega qualquer coisa no formato: <project>/jobs/**.yml|yaml
+          mapfile -t files < <(
+            git diff --name-only "$BEFORE" "$AFTER" \
+              | grep -E '^[^/]+/jobs/.*\.ya?ml$' || true
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "Nenhum job YAML alterado, nada a fazer."
+            exit 0
+          fi
+
+          echo "Arquivos alterados:"
+          printf ' - %s\n' "${files[@]}"
+
+          # Detecta versão da API (ajuste se você já souber a sua)
+          API_VER="${RUNDECK_API_VERSION:-45}"
+
+          ensure_project() {
+            local project="$1"
+            local base="${RD_URL%/}"
+            local token="$RD_TOKEN"
+
+            echo "🔎 Verificando projeto '$project' no Rundeck..."
+            if curl -fsS \
+              -H "X-Rundeck-Auth-Token: ${token}" \
+              -H "Accept: application/json" \
+              "${base}/api/${API_VER}/project/${project}" >/dev/null; then
+              echo "✅ Projeto '$project' já existe."
+              return 0
+            fi
+
+            echo "🧱 Projeto '$project' não existe. Criando..."
+            # Criação via API: POST /api/<ver>/projects
+            # Config mínima: descrição (o Rundeck completa o resto com defaults)
+            curl -fsS -X POST \
+              -H "X-Rundeck-Auth-Token: ${token}" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "${base}/api/${API_VER}/projects" \
+              -d "{\"name\":\"${project}\",\"config\":{\"project.description\":\"Managed by GitHub Actions\"}}"
+
+            echo "✅ Projeto '$project' criado."
+          }
+
+          for f in "${files[@]}"; do
+            project="$(cut -d/ -f1 <<<"$f")"
+            echo "==> Sync: project=$project file=$f"
+
+            ensure_project "$project"
+
+            rd jobs load -p "$project" -F yaml -f "$f" --duplicate update
