@@ -1,28 +1,249 @@
-- defaultTab: nodes
-  description: |
-    Verifica o tamanho atual do disco do dbaas e aumenta em 50% do valor atual.
-    test
-    ---
-    Versão: __GIT_BRANCH__@__GIT_COMMIT__
-    Publicado em: __GIT_DATE__
-  executionEnabled: true
-  id: mgc-recize-disck-dbaas
-  loglevel: INFO
-  name: "MGC - DBaaS disck recise"
-  nodeFilterEditable: false
+ - defaultTab: nodes
+  description: |-
+    Resize de disco (volume.size) em instâncias DBaaS na Magalu Cloud (MGC).
 
+    O job:
+    - Lista instâncias (todas ou filtradas por ID/NOME)
+    - Calcula novo volume.size = +PERCENT% (default 50%), arredondando pra cima
+    - Executa mgc dbaas instances resize (ou simula com DRY_RUN)
+    - Exibe um resumo final com o plano/execução
+
+    Requisitos no node/runner:
+    - mgc CLI disponível no PATH
+    - jq instalado
+  executionEnabled: true
+  id:  mgc-recize-disck-dbaas
+  loglevel: INFO
+  name: MGC - DBaaS Disk Resize (+%)
+  nodeFilterEditable: false
   options:
     - name: API_KEY
-      label: MgcApiKey
-      description: "API Key para autenticar na Magalu Cloud"
+      label: MGC API Key
+      description: API Key para autenticação no MGC (obrigatório).
       required: true
       secure: true
       valueExposed: true
+
+    - name: REGION
+      label: Região
+      description: Região do serviço DBaaS (default br-se1).
+      required: true
+      value: br-se1
+      values:
+        - br-se1
+        - br-ne1
+        - br-mgl1
+      valuesListDelimiter: ','
+
+    - name: INSTANCE_ID
+      label: Instance ID (opcional)
+      description: Se informado, aplica apenas nessa instância (UUID).
+      required: false
+
+    - name: INSTANCE_NAME
+      label: Instance Name (opcional)
+      description: Se informado, aplica apenas na instância com esse nome (match exato).
+      required: false
+
+    - name: PERCENT
+      label: Percentual de aumento
+      description: Percentual a adicionar ao volume atual (ex: 50 = +50%).
+      required: true
+      value: '50'
+
+    - name: DRY_RUN
+      label: Dry Run
+      description: Se true, apenas simula e não executa o resize.
+      required: true
+      value: 'true'
+      values:
+        - 'true'
+        - 'false'
+      valuesListDelimiter: ','
+
+    - name: NO_CONFIRM
+      label: Sem confirmação
+      description: Se true, passa --no-confirm no comando de resize.
+      required: true
+      value: 'true'
+      values:
+        - 'true'
+        - 'false'
+      valuesListDelimiter: ','
 
   sequence:
     keepgoing: false
     strategy: node-first
     commands:
-      - script: |
+      - script: |-
           #!/usr/bin/env bash
-          echo "testando script"
+          set -euo pipefail
+
+          # ----------------------------
+          # Inputs (Rundeck)
+          # ----------------------------
+          API_KEY="${RD_OPTION_API_KEY:-}"
+          REGION="${RD_OPTION_REGION:-br-se1}"
+          FILTER_ID="${RD_OPTION_INSTANCE_ID:-}"
+          FILTER_NAME="${RD_OPTION_INSTANCE_NAME:-}"
+          DRY_RUN="${RD_OPTION_DRY_RUN:-true}"
+          NO_CONFIRM="${RD_OPTION_NO_CONFIRM:-true}"
+          PERCENT="${RD_OPTION_PERCENT:-50}"
+
+          MIN_SIZE=10
+          MAX_SIZE=50000
+
+          # ----------------------------
+          # Helpers
+          # ----------------------------
+          die() { echo "ERROR: $*" >&2; exit 1; }
+          log() { echo "[$(date +'%F %T')] $*"; }
+
+          need_cmd() { command -v "$1" >/dev/null 2>&1 || die "comando '$1' não encontrado"; }
+
+          bool_is_true() {
+            local v
+            v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+            case "$v" in
+              1|true|yes|y|sim) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          ceil_div() {
+            local a="$1" b="$2"
+            echo $(( (a + b - 1) / b ))
+          }
+
+          calc_new_size() {
+            local old="$1"
+            local pct="$2"
+            local mul=$((100 + pct))
+            local numerator=$(( old * mul ))
+            local new
+            new="$(ceil_div "$numerator" 100)"
+
+            if (( new <= old )); then new=$((old + 1)); fi
+            if (( new < MIN_SIZE )); then new="$MIN_SIZE"; fi
+            if (( new > MAX_SIZE )); then new="$MAX_SIZE"; fi
+            echo "$new"
+          }
+
+          mgc_cmd() {
+            mgc --region "$REGION" --api-key "$API_KEY" "$@"
+          }
+
+          filter_instances() {
+            local json="$1"
+
+            if [[ -n "$FILTER_ID" ]]; then
+              echo "$json" | jq --arg id "$FILTER_ID" '{results: (.results // []) | map(select(.id == $id))}'
+              return 0
+            fi
+
+            if [[ -n "$FILTER_NAME" ]]; then
+              echo "$json" | jq --arg name "$FILTER_NAME" '{results: (.results // []) | map(select(.name == $name))}'
+              return 0
+            fi
+
+            echo "$json" | jq '{results: (.results // [])}'
+          }
+
+          # ----------------------------
+          # Main
+          # ----------------------------
+          need_cmd mgc
+          need_cmd jq
+
+          [[ -n "$API_KEY" ]] || die "API_KEY não informado (opção obrigatória do job)."
+          [[ "$PERCENT" =~ ^[0-9]+$ ]] || die "PERCENT inválido: '$PERCENT' (use inteiro, ex: 50)"
+
+          log "Região=$REGION | DryRun=$DRY_RUN | Percent=+$PERCENT%"
+          [[ -n "$FILTER_ID" ]] && log "Filtro: instance-id=$FILTER_ID"
+          [[ -n "$FILTER_NAME" ]] && log "Filtro: instance-name=$FILTER_NAME"
+
+          raw_json="$(mgc_cmd dbaas instances list --raw --output json | cat)" \
+            || die "falha ao executar 'mgc dbaas instances list'"
+
+          filtered="$(filter_instances "$raw_json")"
+          count="$(echo "$filtered" | jq '.results | length')"
+          (( count > 0 )) || die "nenhuma instância encontrada com os filtros informados"
+
+          log "Encontradas $count instância(s)."
+
+          # Resumo final
+          declare -a SUMMARY_LINES=()
+          applied=0
+          skipped=0
+          failed=0
+
+          resize_one() {
+            local id="$1" name="$2" old_size="$3" new_size="$4"
+            local action status
+
+            action="PLAN"
+            status="OK"
+
+            log "Instância: name='$name' id='$id' volume.size=${old_size}GiB -> ${new_size}GiB (+${PERCENT}%)"
+
+            if bool_is_true "$DRY_RUN"; then
+              log "DRY_RUN=true, não aplicando resize."
+              action="DRY_RUN"
+              ((skipped+=1))
+              SUMMARY_LINES+=("$name | $id | $old_size | $new_size | $action | $status")
+              return 0
+            fi
+
+            local nc_flag=()
+            if bool_is_true "$NO_CONFIRM"; then
+              nc_flag=(--no-confirm)
+            fi
+
+            if mgc_cmd dbaas instances resize \
+              --instance-id "$id" \
+              --volume.size "$new_size" \
+              --raw --output yaml \
+              "${nc_flag[@]}"; then
+              log "Resize solicitado para '$name' ($id)."
+              action="RESIZE"
+              ((applied+=1))
+              SUMMARY_LINES+=("$name | $id | $old_size | $new_size | $action | OK")
+            else
+              action="RESIZE"
+              ((failed+=1))
+              SUMMARY_LINES+=("$name | $id | $old_size | $new_size | $action | FAIL")
+              return 1
+            fi
+          }
+
+          while read -r inst; do
+            id="$(echo "$inst" | jq -r '.id')"
+            name="$(echo "$inst" | jq -r '.name')"
+            old_size="$(echo "$inst" | jq -r '.volume.size')"
+
+            [[ "$old_size" =~ ^[0-9]+$ ]] || die "volume.size inválido para $name ($id): '$old_size'"
+
+            new_size="$(calc_new_size "$old_size" "$PERCENT")"
+
+            if (( new_size == old_size )); then
+              log "Nada a fazer para '$name' ($id)."
+              ((skipped+=1))
+              SUMMARY_LINES+=("$name | $id | $old_size | $new_size | NOOP | OK")
+              continue
+            fi
+
+            resize_one "$id" "$name" "$old_size" "$new_size"
+          done < <(echo "$filtered" | jq -c '.results[]')
+
+          log "Concluído."
+
+          echo
+          echo "==================== RESUMO FINAL ===================="
+          echo "name | id | oldGiB | newGiB | action | status"
+          echo "------------------------------------------------------"
+          for line in "${SUMMARY_LINES[@]}"; do
+            echo "$line"
+          done
+          echo "------------------------------------------------------"
+          echo "applied=$applied skipped=$skipped failed=$failed"
+          echo "======================================================"
