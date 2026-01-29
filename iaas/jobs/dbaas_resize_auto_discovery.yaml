@@ -61,15 +61,30 @@
           set -euo pipefail
 
           # =========================
-          # 0) Inputs (vindos do Rundeck)
+          # 0) Inputs (vindos do Rundeck via env vars)
           # =========================
-          API_KEY="@option.API_KEY@"
-          TENANT_ID="@option.TENANT_ID@"
-          REGION="@option.REGION@"
-          MOUNTPOINT="@option.MOUNTPOINT@"
-          TIMEOUT="@option.TIMEOUT@"
-          OUTPUT_DIR="@option.OUTPUT_DIR@"
-          SHOW_SAMPLE="@option.SHOW_SAMPLE@"
+          API_KEY="${RD_OPTION_API_KEY:-}"
+          TENANT_ID="${RD_OPTION_TENANT_ID:-}"
+          REGION="${RD_OPTION_REGION:-}"
+          MOUNTPOINT="${RD_OPTION_MOUNTPOINT:-/}"
+          TIMEOUT="${RD_OPTION_TIMEOUT:-4}"
+          OUTPUT_DIR="${RD_OPTION_OUTPUT_DIR:-/var/log/rundeck}"
+          SHOW_SAMPLE="${RD_OPTION_SHOW_SAMPLE:-0}"
+
+          # Valida TENANT_ID
+          if [[ -z "${TENANT_ID}" ]]; then
+            echo "ERRO: TENANT_ID não informado (RD_OPTION_TENANT_ID vazio)."
+            exit 1
+          fi
+
+          # Valida API_KEY sem expor
+          if [[ -z "${API_KEY}" ]]; then
+            echo "ERRO: API_KEY não informada."
+            exit 1
+          fi
+
+          echo "OK: TENANT_ID=${TENANT_ID}"
+          echo "OK: API_KEY recebida (tamanho=${#API_KEY})"
 
           # =========================
           # 1) Pre-flight: dependências
