@@ -291,13 +291,27 @@
                 # USED = size - avail
                 # ------------------------------------------------------------
                 if [[ -n "${SIZE_B}" && -n "${AVAIL_B}" ]]; then
-                  USED_B=$(( SIZE_B - AVAIL_B ))
-                  DISK_USED_GIB="$(awk -v b="$USED_B" 'BEGIN{printf "%.2f", b/1024/1024/1024}')"
-                  DISK_FREE_GIB="$(awk -v b="$AVAIL_B" 'BEGIN{printf "%.2f", b/1024/1024/1024}')"
-                  DISK_TOTAL_GIB="$(awk -v b="$SIZE_B" 'BEGIN{printf "%.2f", b/1024/1024/1024}')"
-                  DISK_USED_PCT="$(awk -v u="$USED_B" -v s="$SIZE_B" 'BEGIN{printf "%.2f", (u/s)*100}')"
+                  # ------------------------------------------------------------
+                  # Prometheus pode expor bytes em notação científica (ex: 2.09e+10)
+                  # Bash não faz aritmética com isso. Fazemos tudo em awk e já
+                  # devolvemos GiB e percent formatados.
+                  # ------------------------------------------------------------
+                  read -r DISK_USED_GIB DISK_FREE_GIB DISK_TOTAL_GIB DISK_USED_PCT < <(
+                    awk -v size="${SIZE_B}" -v avail="${AVAIL_B}" '
+                      BEGIN {
+                        # força conversão numérica (awk entende notação científica)
+                        s = size + 0
+                        a = avail + 0
+                        if (s <= 0) { exit 0 }
+
+                        u = s - a
+                        gib = 1024*1024*1024
+
+                        printf "%.2f %.2f %.2f %.2f\n", (u/gib), (a/gib), (s/gib), ((u/s)*100)
+                      }
+                    '
+                  )
                 fi
-              fi
 
               # ------------------------------------------------------------
               # endpoint específico do engine
