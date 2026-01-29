@@ -3,7 +3,7 @@
   description: "Auto discovery de DBaaS (API + métricas) para resize inteligente. Usa API_KEY + TENANT_ID (sem necessidade de login mgc)."
   executionEnabled: true
   loglevel: INFO
-  name: "MGC - DBaaS Metrics (API + node + mysql + postgres)"
+  name: "MGC - DBaaS Recize Auto Discovery - Metrics (API + node + mysql + postgres)"
   nodeFilterEditable: false
   scheduleEnabled: false
 
