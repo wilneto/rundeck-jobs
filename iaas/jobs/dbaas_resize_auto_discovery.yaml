@@ -93,6 +93,7 @@
           command -v mgc  >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no PATH"; exit 1; }
           command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
+          command -v sort >/dev/null 2>&1 || { echo "ERRO: sort não encontrado no PATH"; exit 1; }
 
           # Remove sequências ANSI (cores)
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
@@ -224,42 +225,42 @@
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
                 # ------------------------------------------------------------
-                # Auto-detect definitivo do mountpoint de dados (MySQL + Postgres)
+                # Auto-detect robusto do mountpoint de dados (MySQL + Postgres)
                 #
-                # Regra:
-                # 1) Se existir "/mnt/database-data" nas métricas, usa ele (padrão DBaaS comum).
-                # 2) Senão, escolhe o MAIOR filesystem "real" baseado em node_filesystem_size_bytes,
-                #    ignorando mounts de sistema e tmpfs.
+                # Estratégia:
+                # 1) Se existir "/mnt/database-data", usa ele (padrão DBaaS comum)
+                # 2) Senão, escolhe o MAIOR filesystem "real" (size_bytes),
+                #    ignorando tmpfs e mounts de sistema.
                 #
-                # Só ativa quando MOUNTPOINT estiver vazio ou "/".
+                # Observação: usamos parsing simples (split por mountpoint=")
+                # para evitar dependência de awk(match()).
                 # ------------------------------------------------------------
                 if [[ -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ]]; then
-                  # (1) Preferência absoluta: /mnt/database-data
-                  AUTO_MP="$(echo "$METRICS" | awk '
-                    $1=="node_filesystem_size_bytes" &&
-                    $0 ~ "mountpoint=\"/mnt/database-data\"" &&
-                    $0 !~ "fstype=\"tmpfs\"" {print "/mnt/database-data"; exit}
-                  ')"
+                  # (1) Preferência: /mnt/database-data
+                  AUTO_MP="$(echo "$METRICS" \
+                    | awk -F'mountpoint="' '
+                        $1=="node_filesystem_size_bytes" && $0 !~ /fstype="tmpfs"/ {
+                          split($2,a,"\"");
+                          mp=a[1];
+                          if (mp=="/mnt/database-data") { print mp; exit }
+                        }')"
 
-                  # (2) Fallback: maior filesystem (ignora mounts de sistema)
+                  # (2) Fallback: maior filesystem não-sistêmico
                   if [[ -z "${AUTO_MP}" ]]; then
-                    AUTO_MP="$(echo "$METRICS" | awk '
-                      $1=="node_filesystem_size_bytes" &&
-                      $0 !~ "fstype=\"tmpfs\"" &&
-                      $0 !~ "mountpoint=\"/boot\"" &&
-                      $0 !~ "mountpoint=\"/boot/efi\"" &&
-                      $0 !~ "mountpoint=\"/run\"" &&
-                      $0 !~ "mountpoint=\"/run/" &&
-                      $0 !~ "mountpoint=\"/proc\"" &&
-                      $0 !~ "mountpoint=\"/sys\"" {
-                        if (match($0, /mountpoint="[^"]+"/)) {
-                          mp = substr($0, RSTART+12, RLENGTH-13)
-                          size = $NF
-                          if (size > best) { best=size; bestmp=mp }
-                        }
-                      }
-                      END { print bestmp }
-                    ')"
+                    AUTO_MP="$(echo "$METRICS" \
+                      | awk -F'mountpoint="' '
+                          $1=="node_filesystem_size_bytes" && $0 !~ /fstype="tmpfs"/ {
+                            split($2,a,"\"");
+                            mp=a[1];
+                            # ignora mounts de sistema
+                            if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys") next;
+                            # imprime: size\tmp
+                            printf "%s\t%s\n", $NF, mp;
+                          }' \
+                      | sort -nr \
+                      | head -n 1 \
+                      | awk '{print $2}'
+                    )"
                   fi
 
                   # Se por algum motivo vier vazio, cai para "/"
@@ -269,7 +270,7 @@
                 if [[ "${SHOW_SAMPLE}" == "1" ]]; then
                   echo "DEBUG: ${NAME} mountpoint efetivo=${EFFECTIVE_MP} (preferido=${MOUNTPOINT})"
                   echo "DEBUG: filesystem candidates (size):"
-                  echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 10
+                  echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 12
                 fi
 
                 # ------------------------------------------------------------
