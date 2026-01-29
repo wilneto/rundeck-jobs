@@ -64,18 +64,43 @@
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
+
           #Recupera o ID do Tenant 
 
           TENANT_ID="$(
-              mgc auth tenant current --api-key "${API_KEY}" -o json --raw 2>/dev/null \
-              | strip_ansi \
-              | jq -r '.uuid // empty'
-            )"
-            if [[ -z "${TENANT_ID}" ]]; then
-              echo "ERRO: não consegui obter TENANT_ID via 'mgc auth tenant current'."
-              exit 1
-            fi
+              echo "DEBUG: mgc path: $(command -v mgc || true)"
+              echo "DEBUG: mgc version:"
+              mgc version || true
+              echo
 
+              echo "DEBUG: tentando obter tenant atual via mgc..."
+              TENANT_RAW="$(mgc auth tenant current --api-key "${API_KEY}" -o json --raw || true)"
+
+              if [[ -z "${TENANT_RAW}" ]]; then
+                echo "ERRO: mgc não retornou nada em 'tenant current'."
+              else
+                echo "DEBUG: tenant current raw (primeiros 200 chars):"
+                echo "${TENANT_RAW}" | head -c 200; echo
+              fi
+
+              TENANT_ID="$(echo "${TENANT_RAW}" | sed -r 's/\x1B\[[0-9;]*[mK]//g' | jq -r '.uuid // empty' 2>/dev/null || true)"
+
+              if [[ -z "${TENANT_ID}" ]]; then
+                echo "DEBUG: fallback tenant list..."
+                TENANTS_RAW="$(mgc auth tenant list --api-key "${API_KEY}" -o json --raw || true)"
+                TENANT_ID="$(echo "${TENANTS_RAW}" | sed -r 's/\x1B\[[0-9;]*[mK]//g' | jq -r '(.tenants // .results // .items // .)[0].uuid // empty' 2>/dev/null || true)"
+              fi
+
+              if [[ -z "${TENANT_ID}" ]]; then
+                echo "ERRO: não consegui TENANT_ID."
+                echo "DICAS:"
+                echo " - Confira se a opção API_KEY está chegando no job (secure option)."
+                echo " - Garanta que o node tem mgc instalado e funcional para o usuário do rundeck."
+                echo " - Rode manualmente no node: mgc auth tenant current --api-key '***' -o json --raw"
+                exit 1
+              fi
+
+          #Funçõs de API 
           api_get() {
             local url="$1"
             curl -sS \
