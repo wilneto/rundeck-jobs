@@ -198,9 +198,7 @@
             ENAME="${ENGINE_NAME[$ENGINE_ID]:-unknown}"
 
             # ------------------------------------------------------------
-            # IMPORTANTE (fix do erro 141):
-            # Não usamos `| head -n 1` com pipefail.
-            # Pegamos o primeiro IPv4 PRIVATE diretamente no jq (sem pipes).
+            # DB_IP: primeiro IPv4 PRIVATE (sem head -> evita SIGPIPE/141)
             # ------------------------------------------------------------
             DB_IP="$(echo "$D" | jq -r '
               ([.addresses[]? | select(.access=="PRIVATE" and .type=="IPv4") | .address] | .[0]) // empty
@@ -232,44 +230,30 @@
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
                 # ------------------------------------------------------------
-                # Auto-detect robusto do mountpoint de dados (MySQL + Postgres)
-                #
-                # Estratégia:
-                # - percorre node_filesystem_size_bytes
-                # - ignora tmpfs e mounts de sistema
-                # - escolhe o MAIOR filesystem
-                #
-                # Sem pipes -> sem SIGPIPE -> seguro para Rundeck
+                # Auto-detect seguro (sem `echo | awk ... exit` -> evita SIGPIPE)
+                # - prioridade: /mnt/database-data
+                # - fallback: maior filesystem (ignorando mounts de sistema)
                 # ------------------------------------------------------------
                 if [[ -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ]]; then
-                  AUTO_MP="$(echo "$METRICS" | awk '
-                    $0 ~ /^node_filesystem_size_bytes\{/ &&
-                    $0 !~ /fstype="tmpfs"/ {
+                  AUTO_MP="$(awk '
+                    $0 ~ /^node_filesystem_size_bytes\{/ && $0 !~ /fstype="tmpfs"/ {
                       if (match($0, /mountpoint="[^"]+"/)) {
                         mp = substr($0, RSTART+12, RLENGTH-13)
-
-                        # ignora mounts de sistema
-                        if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys")
-                          next
-
+                        if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys") next
                         size = $NF
 
                         # prioridade absoluta
-                        if (mp == "/mnt/database-data") {
-                          bestmp = mp
-                          best = size
-                          exit
-                        }
+                        if (mp == "/mnt/database-data") preferred = mp
 
-                        # fallback: maior filesystem
-                        if (size > best) {
-                          best = size
-                          bestmp = mp
-                        }
+                        # fallback: maior size
+                        if (size > best) { best = size; bestmp = mp }
                       }
                     }
-                    END { if (bestmp != "") print bestmp }
-                  ')"
+                    END {
+                      if (preferred != "") print preferred;
+                      else if (bestmp != "") print bestmp;
+                    }
+                  ' <<< "$METRICS")"
 
                   EFFECTIVE_MP="${AUTO_MP:-/}"
                 fi
@@ -277,22 +261,30 @@
                 if [[ "${SHOW_SAMPLE}" == "1" ]]; then
                   echo "DEBUG: ${NAME} mountpoint efetivo=${EFFECTIVE_MP} (preferido=${MOUNTPOINT})"
                   echo "DEBUG: filesystem candidates (size):"
+                  # aqui head não derruba job porque está protegido com `|| true`
                   echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 12 || true
                 fi
 
                 # ------------------------------------------------------------
-                # Coleta size/avail para o mountpoint efetivo
+                # Coleta size/avail (sem pipes com exit cedo)
                 # ------------------------------------------------------------
-                SIZE_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                SIZE_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_size_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
-                ')"
-                AVAIL_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                  $0 !~ /fstype="tmpfs"/ {
+                    val=$NF
+                  }
+                  END { if (val!="") print val }
+                ' <<< "$METRICS")"
+
+                AVAIL_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_avail_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
-                ')"
+                  $0 !~ /fstype="tmpfs"/ {
+                    val=$NF
+                  }
+                  END { if (val!="") print val }
+                ' <<< "$METRICS")"
 
                 # ------------------------------------------------------------
                 # Calcula used/free/total e percent
@@ -385,5 +377,6 @@
           rm -f "${OUT_NDJSON}"
 
           echo "Relatório salvo em: ${OUT_JSON}"
+
   plugins:
     ExecutionLifecycle: {}
