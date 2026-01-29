@@ -214,14 +214,52 @@
                 NODE_OK=true
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
-                # Auto-detect do disco de dados do DBaaS:
-                # Se existir /mnt/database-data nas métricas e o usuário não forçou outro mountpoint,
-                # usamos /mnt/database-data como mountpoint efetivo.
-                AUTO_MP="$(echo "$METRICS" | awk '
-                  $1=="node_filesystem_size_bytes" && $0 ~ "mountpoint=\"/mnt/database-data\"" {print "/mnt/database-data"; exit}
-                ')"
+                # ------------------------------------------------------------
+                # Auto-detect do mountpoint de dados (cobre MySQL e Postgres)
+                # Regra:
+                # - Se existir /mnt/database-data, usa ele (padrão DBaaS)
+                # - Senão, escolhe o MAIOR filesystem "real" (ext4/xfs) que
+                #   não seja tmpfs e não seja mountpoint de sistema.
+                # Só ativa quando MOUNTPOINT estiver vazio ou "/".
+                # ------------------------------------------------------------
+                if [[ -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ]]; then
+                  # 1) Preferência absoluta: /mnt/database-data
+                  AUTO_MP="$(echo "$METRICS" | awk '
+                    $1=="node_filesystem_size_bytes" &&
+                    $0 ~ "mountpoint=\"/mnt/database-data\"" &&
+                    $0 !~ "fstype=\"tmpfs\"" {print "/mnt/database-data"; exit}
+                  ')"
 
-                if [[ -n "${AUTO_MP}" && ( -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ) ]]; then
+                  # 2) Fallback: maior filesystem não-sistêmico
+                  if [[ -z "${AUTO_MP}" ]]; then
+                    AUTO_MP="$(echo "$METRICS" | awk '
+                      $1=="node_filesystem_size_bytes" &&
+                      $0 !~ "fstype=\"tmpfs\"" &&
+                      $0 !~ "mountpoint=\"/boot\"" &&
+                      $0 !~ "mountpoint=\"/boot/efi\"" &&
+                      $0 !~ "mountpoint=\"/run" &&
+                      $0 !~ "mountpoint=\"/proc\"" &&
+                      $0 !~ "mountpoint=\"/sys\"" &&
+                      $0 !~ "mountpoint=\"/var/lib/docker\"" {
+                        # extrai mountpoint="..."
+                        if (match($0, /mountpoint="[^"]+"/)) {
+                          mp = substr($0, RSTART+12, RLENGTH-13)
+                          size = $NF
+                          # evita escolher "/" se houver outro candidato maior/igual
+                          if (mp != "/") {
+                            if (size > best) { best=size; bestmp=mp }
+                          } else {
+                            rootsize = size
+                          }
+                        }
+                      }
+                      END {
+                        if (bestmp != "") print bestmp;
+                        else print "/";
+                      }
+                    ')"
+                  fi
+
                   EFFECTIVE_MP="${AUTO_MP}"
                 fi
 
