@@ -64,12 +64,17 @@
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
+          #Recupera o ID do Tenant 
 
           TENANT_ID="$(
-            mgc auth tenant current --api-key "${API_KEY}" -o json --raw 2>/dev/null \
-            | strip_ansi | jq -r '.uuid // empty'
-          )"
-          [[ -n "${TENANT_ID}" ]] || { echo "ERRO: não consegui TENANT_ID"; exit 1; }
+              mgc auth tenant current --api-key "${API_KEY}" -o json --raw 2>/dev/null \
+              | strip_ansi \
+              | jq -r '.uuid // empty'
+            )"
+            if [[ -z "${TENANT_ID}" ]]; then
+              echo "ERRO: não consegui obter TENANT_ID via 'mgc auth tenant current'."
+              exit 1
+            fi
 
           api_get() {
             local url="$1"
