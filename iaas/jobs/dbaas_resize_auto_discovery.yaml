@@ -1,6 +1,6 @@
 - id: dbaas_resize_auto_discovery
   defaultTab: output
-  description: "Coleta inventário DBaaS + métricas (/node/metrics e /mysql|/postgres/metrics) usando apenas API Key (MGC)."
+  description: "Auto discovery de DBaaS (API + métricas) para resize inteligente. Usa API_KEY + TENANT_ID (sem necessidade de login mgc)."
   executionEnabled: true
   loglevel: INFO
   name: "MGC - DBaaS Metrics (API + node + mysql + postgres)"
@@ -14,6 +14,12 @@
       required: true
       secure: true
       valueExposed: true
+
+    - name: TENANT_ID
+      label: Tenant ID
+      description: "UUID do tenant necessário para chamadas API (x-tenant-id). Ex: c2881b71-..."
+      required: true
+      value: ""
 
     - name: REGION
       label: Região (opcional)
@@ -41,7 +47,7 @@
 
     - name: SHOW_SAMPLE
       label: Debug (0/1)
-      description: "1 mostra amostras do retorno e logs extra (ajuda em troubleshooting)."
+      description: "1 mostra logs extra (ajuda em troubleshooting)."
       required: false
       value: "0"
 
@@ -58,6 +64,7 @@
           # 0) Inputs (vindos do Rundeck)
           # =========================
           API_KEY="@option.API_KEY@"
+          TENANT_ID="@option.TENANT_ID@"
           REGION="@option.REGION@"
           MOUNTPOINT="@option.MOUNTPOINT@"
           TIMEOUT="@option.TIMEOUT@"
@@ -71,55 +78,29 @@
           command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
-          # Remove sequências ANSI (cores), caso apareçam em algum output
-          strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
+          # Valida se TENANT_ID chegou do Rundeck
+          if [[ -z "${TENANT_ID}" || "${TENANT_ID}" == "@option.TENANT_ID@" ]]; then
+            echo "ERRO: TENANT_ID não informado (option obrigatória)."
+            exit 1
+          fi
 
           # Debug opcional
           if [[ "${SHOW_SAMPLE}" == "1" ]]; then
             echo "DEBUG: mgc path: $(command -v mgc || true)"
             echo "DEBUG: mgc version:"
-            mgc version || true
+            mgc --version || true
+            echo "DEBUG: TENANT_ID recebido: ${TENANT_ID}"
+            echo "DEBUG: API_KEY recebida (tamanho): ${#API_KEY}"
             echo
-          fi
-
-          # =========================
-          # 2) Descobrir TENANT_ID usando apenas API_KEY
-          #    (via CLI mgc, que sabe resolver o tenant vinculado à key)
-          # =========================
-          TENANT_RAW="$(mgc auth tenant current --api-key "${API_KEY}" -o json --raw 2>&1 | strip_ansi || true)"
-
-          if [[ "${SHOW_SAMPLE}" == "1" ]]; then
-            echo "DEBUG: tenant current raw (primeiros 200 chars):"
-            echo "${TENANT_RAW}" | head -c 200; echo
-            echo
-          fi
-
-          # Extrai uuid do JSON, se houver
-          TENANT_ID="$(echo "${TENANT_RAW}" | jq -r '.uuid // empty' 2>/dev/null || true)"
-
-          # Fallback: tentar listar tenants e pegar o primeiro uuid
-          if [[ -z "${TENANT_ID}" ]]; then
-            if [[ "${SHOW_SAMPLE}" == "1" ]]; then
-              echo "DEBUG: não veio uuid em tenant current. Tentando tenant list..."
-            fi
-            TENANTS_RAW="$(mgc auth tenant list --api-key "${API_KEY}" -o json --raw 2>&1 | strip_ansi || true)"
-            TENANT_ID="$(echo "${TENANTS_RAW}" | jq -r '(.tenants // .results // .items // .)[0].uuid // empty' 2>/dev/null || true)"
-          fi
-
-          # Falha hard se ainda não tiver tenant
-          if [[ -z "${TENANT_ID}" ]]; then
-            echo "ERRO: não consegui TENANT_ID."
-            echo "DICAS:"
-            echo " - Confirme se a opção API_KEY está chegando corretamente ao job (secure + valueExposed)."
-            echo " - Rode no mesmo node do Rundeck: mgc auth tenant current --api-key '***' -o json --raw"
-            echo " - Se o mgc retornar texto/erro, habilite SHOW_SAMPLE=1 para ver o conteúdo."
-            exit 1
           fi
 
           echo "OK: TENANT_ID=${TENANT_ID}"
 
+          # Remove sequências ANSI (cores), caso apareçam em algum output
+          strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
+
           # =========================
-          # 3) Helpers de API (calls REST)
+          # 2) Helpers de API (calls REST)
           # =========================
           api_get() {
             local url="$1"
@@ -130,7 +111,7 @@
           }
 
           # =========================
-          # 4) Detectar região (se não vier no input)
+          # 3) Detectar região (se não vier no input)
           #    DBaaS é regional, então testamos as regiões comuns.
           # =========================
           detect_region() {
@@ -158,7 +139,7 @@
           echo
 
           # =========================
-          # 5) Mapear engine_id -> tipo (mysql|postgres)
+          # 4) Mapear engine_id -> tipo (mysql|postgres)
           #    Usamos mgc dbaas engines list e inferimos pelo nome do engine.
           # =========================
           ENGINES_JSON="$(
@@ -180,7 +161,7 @@
           done < <(echo "$ENGINES_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"')
 
           # =========================
-          # 6) Listar instâncias DBaaS
+          # 5) Listar instâncias DBaaS via API
           # =========================
           LIST_URL="https://api.magalu.cloud/${REGION}/database/v2/instances"
           LIST_JSON="$(api_get "${LIST_URL}")"
@@ -196,8 +177,8 @@
           echo
 
           # =========================
-          # 7) Preparar arquivo de relatório
-          #    Vamos gerar NDJSON durante o loop e depois converter em JSON array.
+          # 6) Preparar arquivo de relatório
+          #    Gera NDJSON durante o loop e converte para JSON array ao final.
           # =========================
           TS="$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${OUTPUT_DIR}"
@@ -206,7 +187,7 @@
           : > "${OUT_NDJSON}"
 
           # =========================
-          # 8) Para cada instância:
+          # 7) Para cada instância:
           #    - consulta detalhes
           #    - pega IP privado
           #    - testa /node/metrics e calcula disco (used/free/total/%)
@@ -324,7 +305,7 @@
           done
 
           # =========================
-          # 9) NDJSON -> JSON array
+          # 8) NDJSON -> JSON array
           # =========================
           jq -s '.' "${OUT_NDJSON}" > "${OUT_JSON}"
           rm -f "${OUT_NDJSON}"
