@@ -62,7 +62,6 @@
 
           # ============================================================
           # 0) Inputs (Rundeck exporta options como env vars RD_OPTION_*)
-          #    Isso é mais confiável do que @option.X@ em jobs YAML no Git.
           # ============================================================
           API_KEY="${RD_OPTION_API_KEY:-}"
           TENANT_ID="${RD_OPTION_TENANT_ID:-}"
@@ -93,11 +92,11 @@
           command -v mgc  >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no PATH"; exit 1; }
           command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
+          command -v awk  >/dev/null 2>&1 || { echo "ERRO: awk não encontrado no PATH"; exit 1; }
 
           # Remove sequências ANSI (cores)
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
-          # Debug opcional
           if [[ "${SHOW_SAMPLE}" == "1" ]]; then
             echo "DEBUG: mgc path: $(command -v mgc || true)"
             echo "DEBUG: mgc version:"
@@ -106,7 +105,7 @@
           fi
 
           # ============================================================
-          # 3) Helpers de API (calls REST)
+          # 3) Helpers de API
           # ============================================================
           api_get() {
             local url="$1"
@@ -117,18 +116,21 @@
           }
 
           # ============================================================
-          # 4) Detectar região (se não vier no input)
+          # 4) Detectar região (se vazio)
           # ============================================================
           detect_region() {
             local regions=(br-se1 br-ne1 br-ne-1)
+            local r url code
             for r in "${regions[@]}"; do
-              local url="https://api.magalu.cloud/${r}/database/v2/instances"
-              local code
+              url="https://api.magalu.cloud/${r}/database/v2/instances"
               code="$(curl -sS -o /dev/null -w "%{http_code}" \
                 -H "x-api-key: ${API_KEY}" \
                 -H "x-tenant-id: ${TENANT_ID}" \
                 "$url" || true)"
-              [[ "$code" == "200" ]] && { echo "$r"; return 0; }
+              if [[ "$code" == "200" ]]; then
+                echo "$r"
+                return 0
+              fi
             done
             return 1
           }
@@ -155,14 +157,14 @@
           while IFS=$'\t' read -r id name; do
             lname="$(echo "$name" | tr '[:upper:]' '[:lower:]')"
             ENGINE_NAME["$id"]="$name"
-            if [[ "$lname" == *"mysql"* ]]; then
+            if [[ "$lname" == *mysql* ]]; then
               ENGINE_KIND["$id"]="mysql"
-            elif [[ "$lname" == *"postgres"* ]]; then
+            elif [[ "$lname" == *postgres* ]]; then
               ENGINE_KIND["$id"]="postgres"
             else
               ENGINE_KIND["$id"]="unknown"
             fi
-          done < <(echo "$ENGINES_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"')
+          done < <(jq -r '.results[] | "\(.id)\t\(.name)"' <<< "$ENGINES_JSON")
 
           # ============================================================
           # 6) Listar instâncias DBaaS via API
@@ -171,7 +173,7 @@
           LIST_JSON="$(api_get "${LIST_URL}")"
 
           echo "DBaaS:"
-          echo "$LIST_JSON" | jq -r '.results[] | " - \(.name)\t\(.id)\t\(.volume.size)GiB\t\(.status)"'
+          jq -r '.results[] | " - \(.name)\t\(.id)\t\(.volume.size)GiB\t\(.status)"' <<< "$LIST_JSON"
           echo
 
           # ============================================================
@@ -184,53 +186,44 @@
           : > "${OUT_NDJSON}"
 
           # ============================================================
-          # 8) Loop por instância
+          # 8) Loop por instância (SEM pipe; evita subshells e surpresas)
           # ============================================================
-          echo "$LIST_JSON" | jq -c '.results[]' | while read -r inst; do
-            INSTANCE_ID="$(echo "$inst" | jq -r '.id')"
+          while IFS= read -r inst; do
+            INSTANCE_ID="$(jq -r '.id' <<< "$inst")"
+
             D="$(api_get "https://api.magalu.cloud/${REGION}/database/v2/instances/${INSTANCE_ID}")"
 
-            NAME="$(echo "$D" | jq -r '.name')"
-            STATUS="$(echo "$D" | jq -r '.status')"
-            SIZE_GIB_PROV="$(echo "$D" | jq -r '.volume.size')"
-            ENGINE_ID="$(echo "$D" | jq -r '.engine_id // empty')"
+            NAME="$(jq -r '.name' <<< "$D")"
+            STATUS="$(jq -r '.status' <<< "$D")"
+            SIZE_GIB_PROV="$(jq -r '.volume.size' <<< "$D")"
+            ENGINE_ID="$(jq -r '.engine_id // empty' <<< "$D")"
             KIND="${ENGINE_KIND[$ENGINE_ID]:-unknown}"
             ENAME="${ENGINE_NAME[$ENGINE_ID]:-unknown}"
 
-            # ------------------------------------------------------------
-            # DB_IP: primeiro IPv4 PRIVATE (sem head -> evita SIGPIPE/141)
-            # ------------------------------------------------------------
-            DB_IP="$(echo "$D" | jq -r '
-              ([.addresses[]? | select(.access=="PRIVATE" and .type=="IPv4") | .address] | .[0]) // empty
-            ')"
+            # Primeiro IPv4 PRIVATE (sem head)
+            DB_IP="$(jq -r '([.addresses[]? | select(.access=="PRIVATE" and .type=="IPv4") | .address] | .[0]) // empty' <<< "$D")"
 
             NODE_URL=""
             APP_URL=""
             NODE_OK=false
             APP_OK=false
 
-            # Métricas de disco (calculadas a partir do /node/metrics)
             DISK_USED_GIB=""
             DISK_FREE_GIB=""
             DISK_TOTAL_GIB=""
             DISK_USED_PCT=""
 
-            # O mountpoint efetivo pode ser:
-            # - o informado (MOUNTPOINT), se diferente de "/" e não vazio
-            # - ou auto-detect (disco de dados), quando MOUNTPOINT estiver vazio ou "/"
             EFFECTIVE_MP="${MOUNTPOINT}"
 
             if [[ -n "${DB_IP}" ]]; then
-              # ------------------------------------------------------------
-              # node exporter: filesystem
-              # ------------------------------------------------------------
               NODE_URL="http://${DB_IP}:8080/node/metrics"
+
               if curl -sS --max-time "${TIMEOUT}" "${NODE_URL}" >/dev/null 2>&1; then
                 NODE_OK=true
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
                 # ------------------------------------------------------------
-                # Auto-detect seguro (sem `echo | awk ... exit` -> evita SIGPIPE)
+                # Auto-detect seguro (MySQL + Postgres)
                 # - prioridade: /mnt/database-data
                 # - fallback: maior filesystem (ignorando mounts de sistema)
                 # ------------------------------------------------------------
@@ -241,11 +234,7 @@
                         mp = substr($0, RSTART+12, RLENGTH-13)
                         if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys") next
                         size = $NF
-
-                        # prioridade absoluta
                         if (mp == "/mnt/database-data") preferred = mp
-
-                        # fallback: maior size
                         if (size > best) { best = size; bestmp = mp }
                       }
                     }
@@ -254,68 +243,50 @@
                       else if (bestmp != "") print bestmp;
                     }
                   ' <<< "$METRICS")"
-
                   EFFECTIVE_MP="${AUTO_MP:-/}"
                 fi
 
-                if [[ "${SHOW_SAMPLE}" == "1" ]]; then
-                  echo "DEBUG: ${NAME} mountpoint efetivo=${EFFECTIVE_MP} (preferido=${MOUNTPOINT})"
-                  echo "DEBUG: filesystem candidates (size):"
-                  # aqui head não derruba job porque está protegido com `|| true`
-                  echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 12 || true
-                fi
-
                 # ------------------------------------------------------------
-                # Coleta size/avail (sem pipes com exit cedo)
+                # Coleta size/avail (awk entende notação científica)
                 # ------------------------------------------------------------
                 SIZE_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_size_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ /fstype="tmpfs"/ {
-                    val=$NF
-                  }
+                  $0 !~ /fstype="tmpfs"/ { val=$NF }
                   END { if (val!="") print val }
                 ' <<< "$METRICS")"
 
                 AVAIL_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_avail_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ /fstype="tmpfs"/ {
-                    val=$NF
-                  }
+                  $0 !~ /fstype="tmpfs"/ { val=$NF }
                   END { if (val!="") print val }
                 ' <<< "$METRICS")"
 
                 # ------------------------------------------------------------
-                # Calcula used/free/total e percent
-                # USED = size - avail
+                # Cálculo 100% em awk (evita bash + notação científica)
                 # ------------------------------------------------------------
                 if [[ -n "${SIZE_B}" && -n "${AVAIL_B}" ]]; then
-                  # ------------------------------------------------------------
-                  # Prometheus pode expor bytes em notação científica (ex: 2.09e+10)
-                  # Bash não faz aritmética com isso. Fazemos tudo em awk e já
-                  # devolvemos GiB e percent formatados.
-                  # ------------------------------------------------------------
                   read -r DISK_USED_GIB DISK_FREE_GIB DISK_TOTAL_GIB DISK_USED_PCT < <(
                     awk -v size="${SIZE_B}" -v avail="${AVAIL_B}" '
                       BEGIN {
-                        # força conversão numérica (awk entende notação científica)
                         s = size + 0
                         a = avail + 0
-                        if (s <= 0) { exit 0 }
-
+                        if (s <= 0) exit 0
                         u = s - a
                         gib = 1024*1024*1024
-
                         printf "%.2f %.2f %.2f %.2f\n", (u/gib), (a/gib), (s/gib), ((u/s)*100)
                       }
                     '
                   )
                 fi
 
-              # ------------------------------------------------------------
-              # endpoint específico do engine
-              # ------------------------------------------------------------
+                if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+                  echo "DEBUG: ${NAME} mp=${EFFECTIVE_MP} size_b=${SIZE_B:-NA} avail_b=${AVAIL_B:-NA}"
+                fi
+              fi
+
+              # endpoint engine
               case "$KIND" in
                 mysql)    APP_URL="http://${DB_IP}:8080/mysql/metrics" ;;
                 postgres) APP_URL="http://${DB_IP}:8080/postgres/metrics" ;;
@@ -330,7 +301,7 @@
             fi
 
             # ------------------------------------------------------------
-            # Log resumido por instância
+            # Log resumido
             # ------------------------------------------------------------
             echo "== ${NAME} | ${KIND} =="
             echo "id=${INSTANCE_ID} status=${STATUS} prov=${SIZE_GIB_PROV}GiB ip=${DB_IP:-N/A}"
@@ -343,7 +314,7 @@
             echo
 
             # ------------------------------------------------------------
-            # Persistência: 1 linha JSON (NDJSON)
+            # Persistência NDJSON
             # ------------------------------------------------------------
             jq -n \
               --arg name "$NAME" \
@@ -382,7 +353,8 @@
                   }
                 }
               }' >> "${OUT_NDJSON}"
-          done
+
+          done < <(jq -c '.results[]' <<< "$LIST_JSON")
 
           # ============================================================
           # 9) NDJSON -> JSON array
