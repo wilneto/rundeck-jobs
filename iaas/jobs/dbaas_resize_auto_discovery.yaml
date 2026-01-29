@@ -6,6 +6,7 @@
   name: "MGC - DBaaS Metrics (API + node + mysql + postgres)"
   nodeFilterEditable: false
   scheduleEnabled: false
+
   options:
     - name: API_KEY
       label: MGC API Key
@@ -16,19 +17,19 @@
 
     - name: REGION
       label: Região (opcional)
-      description: "Ex: br-se1. Se vazio, o script tenta detectar."
+      description: "Ex: br-se1. Se vazio, o script tenta detectar automaticamente."
       required: false
       value: ""
 
     - name: MOUNTPOINT
       label: Mountpoint
-      description: "Mountpoint do filesystem para cálculo de uso (padrão /)."
+      description: "Mountpoint para cálculo de uso (padrão /)."
       required: false
       value: "/"
 
     - name: TIMEOUT
       label: Timeout curl (segundos)
-      description: "Timeout para chamadas de métricas (padrão 4)."
+      description: "Timeout para chamadas HTTP de métricas (padrão 4)."
       required: false
       value: "4"
 
@@ -39,10 +40,11 @@
       value: "/var/log/rundeck"
 
     - name: SHOW_SAMPLE
-      label: Mostrar amostras de métricas
-      description: "1 mostra 5 linhas dos endpoints de métricas (debug)."
+      label: Debug (0/1)
+      description: "1 mostra amostras do retorno e logs extra (ajuda em troubleshooting)."
       required: false
       value: "0"
+
   sequence:
     keepgoing: false
     strategy: node-first
@@ -52,6 +54,9 @@
           #!/usr/bin/env bash
           set -euo pipefail
 
+          # =========================
+          # 0) Inputs (vindos do Rundeck)
+          # =========================
           API_KEY="@option.API_KEY@"
           REGION="@option.REGION@"
           MOUNTPOINT="@option.MOUNTPOINT@"
@@ -59,48 +64,63 @@
           OUTPUT_DIR="@option.OUTPUT_DIR@"
           SHOW_SAMPLE="@option.SHOW_SAMPLE@"
 
-          command -v mgc >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no PATH"; exit 1; }
-          command -v jq  >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
+          # =========================
+          # 1) Pre-flight: dependências
+          # =========================
+          command -v mgc  >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no PATH"; exit 1; }
+          command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
+          # Remove sequências ANSI (cores), caso apareçam em algum output
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
-          #Recupera o ID do Tenant 
+          # Debug opcional
+          if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+            echo "DEBUG: mgc path: $(command -v mgc || true)"
+            echo "DEBUG: mgc version:"
+            mgc version || true
+            echo
+          fi
 
-          TENANT_ID="$(
-              echo "DEBUG: mgc path: $(command -v mgc || true)"
-              echo "DEBUG: mgc version:"
-              mgc version || true
-              echo
+          # =========================
+          # 2) Descobrir TENANT_ID usando apenas API_KEY
+          #    (via CLI mgc, que sabe resolver o tenant vinculado à key)
+          # =========================
+          TENANT_RAW="$(mgc auth tenant current --api-key "${API_KEY}" -o json --raw 2>&1 | strip_ansi || true)"
 
-              echo "DEBUG: tentando obter tenant atual via mgc..."
-              TENANT_RAW="$(mgc auth tenant current --api-key "${API_KEY}" -o json --raw || true)"
+          if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+            echo "DEBUG: tenant current raw (primeiros 200 chars):"
+            echo "${TENANT_RAW}" | head -c 200; echo
+            echo
+          fi
 
-              if [[ -z "${TENANT_RAW}" ]]; then
-                echo "ERRO: mgc não retornou nada em 'tenant current'."
-              else
-                echo "DEBUG: tenant current raw (primeiros 200 chars):"
-                echo "${TENANT_RAW}" | head -c 200; echo
-              fi
+          # Extrai uuid do JSON, se houver
+          TENANT_ID="$(echo "${TENANT_RAW}" | jq -r '.uuid // empty' 2>/dev/null || true)"
 
-              TENANT_ID="$(echo "${TENANT_RAW}" | sed -r 's/\x1B\[[0-9;]*[mK]//g' | jq -r '.uuid // empty' 2>/dev/null || true)"
+          # Fallback: tentar listar tenants e pegar o primeiro uuid
+          if [[ -z "${TENANT_ID}" ]]; then
+            if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+              echo "DEBUG: não veio uuid em tenant current. Tentando tenant list..."
+            fi
+            TENANTS_RAW="$(mgc auth tenant list --api-key "${API_KEY}" -o json --raw 2>&1 | strip_ansi || true)"
+            TENANT_ID="$(echo "${TENANTS_RAW}" | jq -r '(.tenants // .results // .items // .)[0].uuid // empty' 2>/dev/null || true)"
+          fi
 
-              if [[ -z "${TENANT_ID}" ]]; then
-                echo "DEBUG: fallback tenant list..."
-                TENANTS_RAW="$(mgc auth tenant list --api-key "${API_KEY}" -o json --raw || true)"
-                TENANT_ID="$(echo "${TENANTS_RAW}" | sed -r 's/\x1B\[[0-9;]*[mK]//g' | jq -r '(.tenants // .results // .items // .)[0].uuid // empty' 2>/dev/null || true)"
-              fi
+          # Falha hard se ainda não tiver tenant
+          if [[ -z "${TENANT_ID}" ]]; then
+            echo "ERRO: não consegui TENANT_ID."
+            echo "DICAS:"
+            echo " - Confirme se a opção API_KEY está chegando corretamente ao job (secure + valueExposed)."
+            echo " - Rode no mesmo node do Rundeck: mgc auth tenant current --api-key '***' -o json --raw"
+            echo " - Se o mgc retornar texto/erro, habilite SHOW_SAMPLE=1 para ver o conteúdo."
+            exit 1
+          fi
 
-              if [[ -z "${TENANT_ID}" ]]; then
-                echo "ERRO: não consegui TENANT_ID."
-                echo "DICAS:"
-                echo " - Confira se a opção API_KEY está chegando no job (secure option)."
-                echo " - Garanta que o node tem mgc instalado e funcional para o usuário do rundeck."
-                echo " - Rode manualmente no node: mgc auth tenant current --api-key '***' -o json --raw"
-                exit 1
-              fi
+          echo "OK: TENANT_ID=${TENANT_ID}"
 
-          #Funçõs de API 
+          # =========================
+          # 3) Helpers de API (calls REST)
+          # =========================
           api_get() {
             local url="$1"
             curl -sS \
@@ -109,6 +129,10 @@
               "$url"
           }
 
+          # =========================
+          # 4) Detectar região (se não vier no input)
+          #    DBaaS é regional, então testamos as regiões comuns.
+          # =========================
           detect_region() {
             local regions=(br-se1 br-ne1 br-ne-1)
             for r in "${regions[@]}"; do
@@ -125,16 +149,18 @@
 
           if [[ -z "${REGION}" ]]; then
             REGION="$(detect_region || true)"
-            [[ -n "${REGION}" ]] || { echo "ERRO: não consegui detectar REGION"; exit 1; }
+            [[ -n "${REGION}" ]] || { echo "ERRO: não consegui detectar REGION automaticamente."; exit 1; }
           fi
 
-          echo "OK: TENANT_ID=${TENANT_ID}"
           echo "OK: REGION=${REGION}"
           echo "OK: MOUNTPOINT=${MOUNTPOINT}"
           echo "OK: TIMEOUT=${TIMEOUT}s"
           echo
 
-          # Map engine_id -> kind
+          # =========================
+          # 5) Mapear engine_id -> tipo (mysql|postgres)
+          #    Usamos mgc dbaas engines list e inferimos pelo nome do engine.
+          # =========================
           ENGINES_JSON="$(
             mgc dbaas engines list --status=ACTIVE --api-key "${API_KEY}" -o json --raw 2>/dev/null \
             | strip_ansi
@@ -153,14 +179,40 @@
             fi
           done < <(echo "$ENGINES_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"')
 
+          # =========================
+          # 6) Listar instâncias DBaaS
+          # =========================
           LIST_URL="https://api.magalu.cloud/${REGION}/database/v2/instances"
           LIST_JSON="$(api_get "${LIST_URL}")"
 
+          if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+            echo "DEBUG: LIST_JSON (primeiros 300 chars):"
+            echo "${LIST_JSON}" | head -c 300; echo
+            echo
+          fi
+
+          echo "DBaaS:"
+          echo "$LIST_JSON" | jq -r '.results[] | " - \(.name)\t\(.id)\t\(.volume.size)GiB\t\(.status)"'
+          echo
+
+          # =========================
+          # 7) Preparar arquivo de relatório
+          #    Vamos gerar NDJSON durante o loop e depois converter em JSON array.
+          # =========================
           TS="$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${OUTPUT_DIR}"
           OUT_JSON="${OUTPUT_DIR}/dbaas-metrics-${TS}.json"
+          OUT_NDJSON="${OUT_JSON}.ndjson"
+          : > "${OUT_NDJSON}"
 
-          # Monta um JSON final com inventário + métricas (quando acessível)
+          # =========================
+          # 8) Para cada instância:
+          #    - consulta detalhes
+          #    - pega IP privado
+          #    - testa /node/metrics e calcula disco (used/free/total/%)
+          #    - testa /mysql/metrics ou /postgres/metrics conforme engine
+          #    - grava 1 linha JSON no NDJSON
+          # =========================
           echo "$LIST_JSON" | jq -c '.results[]' | while read -r inst; do
             INSTANCE_ID="$(echo "$inst" | jq -r '.id')"
             D="$(api_get "https://api.magalu.cloud/${REGION}/database/v2/instances/${INSTANCE_ID}")"
@@ -183,11 +235,13 @@
             DISK_USED_PCT=""
 
             if [[ -n "${DB_IP}" ]]; then
+              # ---- node exporter (filesystem) ----
               NODE_URL="http://${DB_IP}:8080/node/metrics"
               if curl -sS --max-time "${TIMEOUT}" "${NODE_URL}" >/dev/null 2>&1; then
                 NODE_OK=true
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
+                # Seleciona métricas do mountpoint (evita tmpfs)
                 SIZE_B="$(echo "$METRICS" | awk -v mp="${MOUNTPOINT}" '
                   $1=="node_filesystem_size_bytes" && $0 ~ "mountpoint=\""mp"\"" && $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
                 ')"
@@ -204,6 +258,7 @@
                 fi
               fi
 
+              # ---- endpoint específico do engine ----
               case "$KIND" in
                 mysql)    APP_URL="http://${DB_IP}:8080/mysql/metrics" ;;
                 postgres) APP_URL="http://${DB_IP}:8080/postgres/metrics" ;;
@@ -217,7 +272,7 @@
               fi
             fi
 
-            # Print resumo no log
+            # ---- Log resumido por instância ----
             echo "== ${NAME} | ${KIND} =="
             echo "id=${INSTANCE_ID} status=${STATUS} prov=${SIZE_GIB_PROV}GiB ip=${DB_IP:-N/A}"
             if [[ "${NODE_OK}" == "true" && -n "${DISK_USED_PCT}" ]]; then
@@ -228,7 +283,7 @@
             echo "node_metrics=${NODE_OK} app_metrics=${APP_OK}"
             echo
 
-            # Append JSON line (NDJSON)
+            # ---- Persistência: 1 linha JSON (NDJSON) ----
             jq -n \
               --arg name "$NAME" \
               --arg id "$INSTANCE_ID" \
@@ -247,13 +302,32 @@
               --arg disk_free_gib "$DISK_FREE_GIB" \
               --arg disk_total_gib "$DISK_TOTAL_GIB" \
               --arg disk_used_pct "$DISK_USED_PCT" \
-              '{name:$name,id:$id,status:$status,engine:{id:$engine_id,kind:$engine_kind,name:$engine_name},volume:{provisioned_gib:($volume_gib|tonumber)},network:{ip_private:$ip_private},metrics:{mountpoint:$mountpoint,node:{url:$node_url,ok:($node_ok=="true")},app:{url:$app_url,ok:($app_ok=="true")},disk:{used_gib:($disk_used_gib|if .=="" then null else (.|tonumber) end),free_gib:($disk_free_gib|if .=="" then null else (.|tonumber) end),total_gib:($disk_total_gib|if .=="" then null else (.|tonumber) end),used_pct:($disk_used_pct|if .=="" then null else (.|tonumber) end)}}}' \
-              >> "${OUT_JSON}.ndjson"
+              '{
+                name:$name,
+                id:$id,
+                status:$status,
+                engine:{id:$engine_id,kind:$engine_kind,name:$engine_name},
+                volume:{provisioned_gib:($volume_gib|tonumber)},
+                network:{ip_private:$ip_private},
+                metrics:{
+                  mountpoint:$mountpoint,
+                  node:{url:$node_url,ok:($node_ok=="true")},
+                  app:{url:$app_url,ok:($app_ok=="true")},
+                  disk:{
+                    used_gib:($disk_used_gib|if .=="" then null else (.|tonumber) end),
+                    free_gib:($disk_free_gib|if .=="" then null else (.|tonumber) end),
+                    total_gib:($disk_total_gib|if .=="" then null else (.|tonumber) end),
+                    used_pct:($disk_used_pct|if .=="" then null else (.|tonumber) end)
+                  }
+                }
+              }' >> "${OUT_NDJSON}"
           done
 
-          # Converte NDJSON -> JSON array
-          jq -s '.' "${OUT_JSON}.ndjson" > "${OUT_JSON}"
-          rm -f "${OUT_JSON}.ndjson"
+          # =========================
+          # 9) NDJSON -> JSON array
+          # =========================
+          jq -s '.' "${OUT_NDJSON}" > "${OUT_JSON}"
+          rm -f "${OUT_NDJSON}"
 
           echo "Relatório salvo em: ${OUT_JSON}"
   plugins:
