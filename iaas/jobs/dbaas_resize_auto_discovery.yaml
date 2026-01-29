@@ -227,19 +227,17 @@
                 # ------------------------------------------------------------
                 # Auto-detect robusto do mountpoint de dados (MySQL + Postgres)
                 #
-                # Estratégia:
-                # 1) Se existir "/mnt/database-data", usa ele (padrão DBaaS comum)
-                # 2) Senão, escolhe o MAIOR filesystem "real" (size_bytes),
-                #    ignorando tmpfs e mounts de sistema.
-                #
-                # Observação: usamos parsing simples (split por mountpoint=")
-                # para evitar dependência de awk(match()).
+                # IMPORTANTE: as métricas vêm como:
+                #   node_filesystem_size_bytes{...} <valor>
+                # então NÃO dá para comparar $1=="node_filesystem_size_bytes".
+                # Usamos regex no $0:
+                #   $0 ~ /^node_filesystem_size_bytes\{/
                 # ------------------------------------------------------------
                 if [[ -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ]]; then
-                  # (1) Preferência: /mnt/database-data
+                  # (1) Preferência: /mnt/database-data (se existir)
                   AUTO_MP="$(echo "$METRICS" \
                     | awk -F'mountpoint="' '
-                        $1=="node_filesystem_size_bytes" && $0 !~ /fstype="tmpfs"/ {
+                        $0 ~ /^node_filesystem_size_bytes\{/ && $0 !~ /fstype="tmpfs"/ {
                           split($2,a,"\"");
                           mp=a[1];
                           if (mp=="/mnt/database-data") { print mp; exit }
@@ -249,7 +247,7 @@
                   if [[ -z "${AUTO_MP}" ]]; then
                     AUTO_MP="$(echo "$METRICS" \
                       | awk -F'mountpoint="' '
-                          $1=="node_filesystem_size_bytes" && $0 !~ /fstype="tmpfs"/ {
+                          $0 ~ /^node_filesystem_size_bytes\{/ && $0 !~ /fstype="tmpfs"/ {
                             split($2,a,"\"");
                             mp=a[1];
                             # ignora mounts de sistema
@@ -277,12 +275,12 @@
                 # Coleta size/avail para o mountpoint efetivo
                 # ------------------------------------------------------------
                 SIZE_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
-                  $1=="node_filesystem_size_bytes" &&
+                  $0 ~ /^node_filesystem_size_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
                   $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
                 ')"
                 AVAIL_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
-                  $1=="node_filesystem_avail_bytes" &&
+                  $0 ~ /^node_filesystem_avail_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
                   $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
                 ')"
