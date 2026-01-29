@@ -29,7 +29,7 @@
 
     - name: MOUNTPOINT
       label: Mountpoint
-      description: "Mountpoint para cálculo de uso (padrão /)."
+      description: "Mountpoint preferido para cálculo de uso. Se vazio ou '/', auto-detect usa /mnt/database-data quando existir."
       required: false
       value: "/"
 
@@ -62,7 +62,6 @@
 
           # ============================================================
           # 0) Inputs (Rundeck exporta options como env vars RD_OPTION_*)
-          #    Isso é mais confiável do que @option.X@ em jobs YAML no Git.
           # ============================================================
           API_KEY="${RD_OPTION_API_KEY:-}"
           TENANT_ID="${RD_OPTION_TENANT_ID:-}"
@@ -94,7 +93,7 @@
           command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
-          # Remove sequências ANSI (cores), caso apareçam em algum output
+          # Remove sequências ANSI (cores)
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
           # Debug opcional
@@ -118,7 +117,6 @@
 
           # ============================================================
           # 4) Detectar região (se não vier no input)
-          #    DBaaS é regional, então testamos as regiões comuns.
           # ============================================================
           detect_region() {
             local regions=(br-se1 br-ne1 br-ne-1)
@@ -140,14 +138,12 @@
           fi
 
           echo "OK: REGION=${REGION}"
-          echo "OK: MOUNTPOINT=${MOUNTPOINT}"
+          echo "OK: MOUNTPOINT(preferido)=${MOUNTPOINT}"
           echo "OK: TIMEOUT=${TIMEOUT}s"
           echo
 
           # ============================================================
           # 5) Mapear engine_id -> tipo (mysql|postgres)
-          #    Usamos mgc dbaas engines list e inferimos pelo nome do engine.
-          #    (Esse comando não precisa login, usa --api-key.)
           # ============================================================
           ENGINES_JSON="$(
             mgc dbaas engines list --status=ACTIVE --api-key "${API_KEY}" -o json --raw 2>/dev/null \
@@ -173,19 +169,12 @@
           LIST_URL="https://api.magalu.cloud/${REGION}/database/v2/instances"
           LIST_JSON="$(api_get "${LIST_URL}")"
 
-          if [[ "${SHOW_SAMPLE}" == "1" ]]; then
-            echo "DEBUG: LIST_JSON (primeiros 300 chars):"
-            echo "${LIST_JSON}" | head -c 300; echo
-            echo
-          fi
-
           echo "DBaaS:"
           echo "$LIST_JSON" | jq -r '.results[] | " - \(.name)\t\(.id)\t\(.volume.size)GiB\t\(.status)"'
           echo
 
           # ============================================================
           # 7) Preparar arquivo de relatório
-          #    Gera NDJSON durante o loop e converte para JSON array ao final.
           # ============================================================
           TS="$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${OUTPUT_DIR}"
@@ -194,12 +183,7 @@
           : > "${OUT_NDJSON}"
 
           # ============================================================
-          # 8) Para cada instância:
-          #    - consulta detalhes
-          #    - pega IP privado
-          #    - testa /node/metrics e calcula disco (used/free/total/%)
-          #    - testa /mysql/metrics ou /postgres/metrics conforme engine
-          #    - grava 1 linha JSON no NDJSON
+          # 8) Loop por instância
           # ============================================================
           echo "$LIST_JSON" | jq -c '.results[]' | while read -r inst; do
             INSTANCE_ID="$(echo "$inst" | jq -r '.id')"
@@ -221,6 +205,7 @@
             DISK_FREE_GIB=""
             DISK_TOTAL_GIB=""
             DISK_USED_PCT=""
+            EFFECTIVE_MP="${MOUNTPOINT}"
 
             if [[ -n "${DB_IP}" ]]; then
               # ---- node exporter (filesystem) ----
@@ -229,12 +214,33 @@
                 NODE_OK=true
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
-                # Seleciona métricas do mountpoint (evita tmpfs)
-                SIZE_B="$(echo "$METRICS" | awk -v mp="${MOUNTPOINT}" '
-                  $1=="node_filesystem_size_bytes" && $0 ~ "mountpoint=\""mp"\"" && $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
+                # Auto-detect do disco de dados do DBaaS:
+                # Se existir /mnt/database-data nas métricas e o usuário não forçou outro mountpoint,
+                # usamos /mnt/database-data como mountpoint efetivo.
+                AUTO_MP="$(echo "$METRICS" | awk '
+                  $1=="node_filesystem_size_bytes" && $0 ~ "mountpoint=\"/mnt/database-data\"" {print "/mnt/database-data"; exit}
                 ')"
-                AVAIL_B="$(echo "$METRICS" | awk -v mp="${MOUNTPOINT}" '
-                  $1=="node_filesystem_avail_bytes" && $0 ~ "mountpoint=\""mp"\"" && $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
+
+                if [[ -n "${AUTO_MP}" && ( -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ) ]]; then
+                  EFFECTIVE_MP="${AUTO_MP}"
+                fi
+
+                if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+                  echo "DEBUG: ${NAME} mountpoint efetivo=${EFFECTIVE_MP} (preferido=${MOUNTPOINT})"
+                  echo "DEBUG: filesystem candidates (size):"
+                  echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 10
+                fi
+
+                # Seleciona métricas do mountpoint efetivo (evita tmpfs)
+                SIZE_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                  $1=="node_filesystem_size_bytes" &&
+                  $0 ~ "mountpoint=\""mp"\"" &&
+                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
+                ')"
+                AVAIL_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                  $1=="node_filesystem_avail_bytes" &&
+                  $0 ~ "mountpoint=\""mp"\"" &&
+                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
                 ')"
 
                 if [[ -n "${SIZE_B}" && -n "${AVAIL_B}" ]]; then
@@ -264,9 +270,9 @@
             echo "== ${NAME} | ${KIND} =="
             echo "id=${INSTANCE_ID} status=${STATUS} prov=${SIZE_GIB_PROV}GiB ip=${DB_IP:-N/A}"
             if [[ "${NODE_OK}" == "true" && -n "${DISK_USED_PCT}" ]]; then
-              echo "disk(${MOUNTPOINT}) used=${DISK_USED_GIB}GiB free=${DISK_FREE_GIB}GiB total=${DISK_TOTAL_GIB}GiB used%=${DISK_USED_PCT}%"
+              echo "disk(${EFFECTIVE_MP}) used=${DISK_USED_GIB}GiB free=${DISK_FREE_GIB}GiB total=${DISK_TOTAL_GIB}GiB used%=${DISK_USED_PCT}%"
             else
-              echo "disk(${MOUNTPOINT}) N/A"
+              echo "disk(${EFFECTIVE_MP}) N/A"
             fi
             echo "node_metrics=${NODE_OK} app_metrics=${APP_OK}"
             echo
@@ -281,7 +287,7 @@
               --arg engine_name "$ENAME" \
               --arg volume_gib "$SIZE_GIB_PROV" \
               --arg ip_private "${DB_IP:-}" \
-              --arg mountpoint "$MOUNTPOINT" \
+              --arg mountpoint "$EFFECTIVE_MP" \
               --arg node_url "$NODE_URL" \
               --arg app_url "$APP_URL" \
               --arg node_ok "$NODE_OK" \
