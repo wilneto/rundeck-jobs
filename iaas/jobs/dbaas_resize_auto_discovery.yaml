@@ -3,7 +3,7 @@
   description: "Coleta inventário DBaaS + métricas (/node/metrics e /mysql|/postgres/metrics) usando apenas API Key (MGC)."
   executionEnabled: true
   loglevel: INFO
-  name: "MGC - DBaaS Metrics (API + node/mysql/postgres)"
+  name: "MGC - DBaaS Metrics (API + node + mysql + postgres)"
   nodeFilterEditable: false
   scheduleEnabled: false
   options:
