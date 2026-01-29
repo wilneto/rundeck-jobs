@@ -60,9 +60,10 @@
           #!/usr/bin/env bash
           set -euo pipefail
 
-          # =========================
-          # 0) Inputs (vindos do Rundeck via env vars)
-          # =========================
+          # ============================================================
+          # 0) Inputs (Rundeck exporta options como env vars RD_OPTION_*)
+          #    Isso é mais confiável do que @option.X@ em jobs YAML no Git.
+          # ============================================================
           API_KEY="${RD_OPTION_API_KEY:-}"
           TENANT_ID="${RD_OPTION_TENANT_ID:-}"
           REGION="${RD_OPTION_REGION:-}"
@@ -71,52 +72,42 @@
           OUTPUT_DIR="${RD_OPTION_OUTPUT_DIR:-/var/log/rundeck}"
           SHOW_SAMPLE="${RD_OPTION_SHOW_SAMPLE:-0}"
 
-          # Valida TENANT_ID
+          # ============================================================
+          # 1) Validações básicas (sem vazar secrets)
+          # ============================================================
           if [[ -z "${TENANT_ID}" ]]; then
             echo "ERRO: TENANT_ID não informado (RD_OPTION_TENANT_ID vazio)."
             exit 1
           fi
-
-          # Valida API_KEY sem expor
           if [[ -z "${API_KEY}" ]]; then
-            echo "ERRO: API_KEY não informada."
+            echo "ERRO: API_KEY não informada (RD_OPTION_API_KEY vazio)."
             exit 1
           fi
 
           echo "OK: TENANT_ID=${TENANT_ID}"
           echo "OK: API_KEY recebida (tamanho=${#API_KEY})"
 
-          # =========================
-          # 1) Pre-flight: dependências
-          # =========================
+          # ============================================================
+          # 2) Pre-flight: dependências
+          # ============================================================
           command -v mgc  >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no PATH"; exit 1; }
           command -v jq   >/dev/null 2>&1 || { echo "ERRO: jq não encontrado no PATH"; exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
 
-          # Valida se TENANT_ID chegou do Rundeck
-          if [[ -z "${TENANT_ID}" || "${TENANT_ID}" == "@option.TENANT_ID@" ]]; then
-            echo "ERRO: TENANT_ID não informado (option obrigatória)."
-            exit 1
-          fi
+          # Remove sequências ANSI (cores), caso apareçam em algum output
+          strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
           # Debug opcional
           if [[ "${SHOW_SAMPLE}" == "1" ]]; then
             echo "DEBUG: mgc path: $(command -v mgc || true)"
             echo "DEBUG: mgc version:"
             mgc --version || true
-            echo "DEBUG: TENANT_ID recebido: ${TENANT_ID}"
-            echo "DEBUG: API_KEY recebida (tamanho): ${#API_KEY}"
             echo
           fi
 
-          echo "OK: TENANT_ID=${TENANT_ID}"
-
-          # Remove sequências ANSI (cores), caso apareçam em algum output
-          strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
-
-          # =========================
-          # 2) Helpers de API (calls REST)
-          # =========================
+          # ============================================================
+          # 3) Helpers de API (calls REST)
+          # ============================================================
           api_get() {
             local url="$1"
             curl -sS \
@@ -125,10 +116,10 @@
               "$url"
           }
 
-          # =========================
-          # 3) Detectar região (se não vier no input)
+          # ============================================================
+          # 4) Detectar região (se não vier no input)
           #    DBaaS é regional, então testamos as regiões comuns.
-          # =========================
+          # ============================================================
           detect_region() {
             local regions=(br-se1 br-ne1 br-ne-1)
             for r in "${regions[@]}"; do
@@ -153,10 +144,11 @@
           echo "OK: TIMEOUT=${TIMEOUT}s"
           echo
 
-          # =========================
-          # 4) Mapear engine_id -> tipo (mysql|postgres)
+          # ============================================================
+          # 5) Mapear engine_id -> tipo (mysql|postgres)
           #    Usamos mgc dbaas engines list e inferimos pelo nome do engine.
-          # =========================
+          #    (Esse comando não precisa login, usa --api-key.)
+          # ============================================================
           ENGINES_JSON="$(
             mgc dbaas engines list --status=ACTIVE --api-key "${API_KEY}" -o json --raw 2>/dev/null \
             | strip_ansi
@@ -175,9 +167,9 @@
             fi
           done < <(echo "$ENGINES_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"')
 
-          # =========================
-          # 5) Listar instâncias DBaaS via API
-          # =========================
+          # ============================================================
+          # 6) Listar instâncias DBaaS via API
+          # ============================================================
           LIST_URL="https://api.magalu.cloud/${REGION}/database/v2/instances"
           LIST_JSON="$(api_get "${LIST_URL}")"
 
@@ -191,24 +183,24 @@
           echo "$LIST_JSON" | jq -r '.results[] | " - \(.name)\t\(.id)\t\(.volume.size)GiB\t\(.status)"'
           echo
 
-          # =========================
-          # 6) Preparar arquivo de relatório
+          # ============================================================
+          # 7) Preparar arquivo de relatório
           #    Gera NDJSON durante o loop e converte para JSON array ao final.
-          # =========================
+          # ============================================================
           TS="$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${OUTPUT_DIR}"
           OUT_JSON="${OUTPUT_DIR}/dbaas-metrics-${TS}.json"
           OUT_NDJSON="${OUT_JSON}.ndjson"
           : > "${OUT_NDJSON}"
 
-          # =========================
-          # 7) Para cada instância:
+          # ============================================================
+          # 8) Para cada instância:
           #    - consulta detalhes
           #    - pega IP privado
           #    - testa /node/metrics e calcula disco (used/free/total/%)
           #    - testa /mysql/metrics ou /postgres/metrics conforme engine
           #    - grava 1 linha JSON no NDJSON
-          # =========================
+          # ============================================================
           echo "$LIST_JSON" | jq -c '.results[]' | while read -r inst; do
             INSTANCE_ID="$(echo "$inst" | jq -r '.id')"
             D="$(api_get "https://api.magalu.cloud/${REGION}/database/v2/instances/${INSTANCE_ID}")"
@@ -319,9 +311,9 @@
               }' >> "${OUT_NDJSON}"
           done
 
-          # =========================
-          # 8) NDJSON -> JSON array
-          # =========================
+          # ============================================================
+          # 9) NDJSON -> JSON array
+          # ============================================================
           jq -s '.' "${OUT_NDJSON}" > "${OUT_JSON}"
           rm -f "${OUT_NDJSON}"
 
