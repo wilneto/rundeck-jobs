@@ -473,13 +473,12 @@
             fi
             echo "node_metrics=${NODE_OK} app_metrics=${APP_OK}"
             echo
-
+            echo "DEBUG: DISK_USED_PCT='${DISK_USED_PCT}' USED_GIB='${DISK_USED_GIB}' TOTAL_GIB='${DISK_TOTAL_GIB}' MP='${EFFECTIVE_MP}' NODE_OK='${NODE_OK}'"
             # ============================================================
             # 12) Decisão (OK/WARN/CRIT) + ação
             # ============================================================
             LEVEL="OK"
             PCT_TO_APPLY=""
-
             if [[ -n "${DISK_USED_PCT}" ]]; then
               if awk -v v="${DISK_USED_PCT}" -v t="${THRESHOLD_CRIT}" 'BEGIN{ exit !(v+0 >= t+0) }'; then
                 LEVEL="CRIT"
@@ -491,7 +490,6 @@
             fi
             # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação"
             if [[ "${LEVEL}" == "OK" ]]; then
-
               # Monta a parte de uso de disco de forma tolerante:
               # - Se tiver percentual, mostra SEMPRE.
               # - Se tiver GiB, complementa com (used/total).
