@@ -220,14 +220,30 @@
           # ============================================================
           gchat_send() {
             local msg="$1"
-            [[ -n "${GCHAT_WEBHOOK_URL}" ]] || return 0
 
-            curl -sS -X POST \
+            # Sempre mostra no log o que SERIA enviado
+            echo "GCHAT >> ${msg}"
+
+            # Se webhook não estiver configurado, avisa no log e sai
+            if [[ -z "${GCHAT_WEBHOOK_URL}" ]]; then
+              echo "GCHAT !! Webhook não configurado (mensagem não enviada)"
+              return 0
+            fi
+
+            # Envia a mensagem
+            local resp
+            resp="$(curl -sS -X POST \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg text "$msg" '{text:$text}')" \
-              "${GCHAT_WEBHOOK_URL}" >/dev/null || true
-          }
+              "${GCHAT_WEBHOOK_URL}" || true)"
 
+            # Mostra resposta do Google Chat no log (debug/auditoria)
+            if [[ -n "${resp}" ]]; then
+              echo "GCHAT << resposta: ${resp}"
+            else
+              echo "GCHAT << sem resposta (verifique webhook/rede)"
+            fi
+          }
           # ============================================================
           # 6) Disparo do resize via API do Rundeck (opcional)
           # ============================================================
