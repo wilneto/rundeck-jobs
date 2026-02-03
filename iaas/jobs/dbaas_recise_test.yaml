@@ -1,0 +1,134 @@
+- id: dbaas_resize_auto_discovery_test
+  defaultTab: output
+  description: "Auto discovery DBaaS (API + métricas) com alerta no GChat e resize automático opcional."
+  executionEnabled: true
+  loglevel: INFO
+  name: "MGC - DBaaS AutoDiscovery + GChat + AutoResize - teste"
+  nodeFilterEditable: false
+  scheduleEnabled: false
+
+  options:
+    - name: API_KEY
+      required: true
+      secure: true
+      valueExposed: true
+
+    - name: TENANT_ID
+      required: true
+
+    - name: REGION
+      required: false
+
+    - name: MOUNTPOINT
+      required: false
+      value: "/"
+
+    - name: TIMEOUT
+      required: false
+      value: "4"
+
+    - name: OUTPUT_DIR
+      required: false
+      value: "/var/log/rundeck"
+
+    - name: THRESHOLD_WARN
+      value: "80"
+
+    - name: THRESHOLD_CRIT
+      value: "90"
+
+    - name: AUTO_APPLY
+      value: "0"
+
+    - name: RESIZE_JOB_UUID
+      required: true
+      value: "294c9634-71d1-404f-9658-6d742c70f27d"
+
+    - name: RD_WEBHOOK_URL
+      required: true
+
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - description: "Auto discovery DBaaS + GChat"
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          API_KEY="${RD_OPTION_API_KEY}"
+          TENANT_ID="${RD_OPTION_TENANT_ID}"
+          REGION="${RD_OPTION_REGION:-br-se1}"
+          MOUNTPOINT="${RD_OPTION_MOUNTPOINT:-/}"
+          TIMEOUT="${RD_OPTION_TIMEOUT:-4}"
+          GCHAT_WEBHOOK_URL="${RD_OPTION_RD_WEBHOOK_URL}"
+
+          CHECK_TS_HUMAN="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+          api_get() {
+            curl -sS \
+              -H "x-api-key: ${API_KEY}" \
+              -H "x-tenant-id: ${TENANT_ID}" \
+              "$1"
+          }
+
+          gchat_send() {
+            local msg="$1"
+            echo "GCHAT >> ${msg}"
+            curl -sS -X POST \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg text "$msg" '{text:$text}')" \
+              "${GCHAT_WEBHOOK_URL}" >/dev/null
+          }
+
+          LIST_JSON="$(api_get "https://api.magalu.cloud/${REGION}/database/v2/instances")"
+
+          jq -c '.results[]' <<< "$LIST_JSON" | while read -r inst; do
+            ID="$(jq -r '.id' <<< "$inst")"
+            NAME="$(jq -r '.name' <<< "$inst")"
+            KIND="$(jq -r '.engine.name' <<< "$inst" | tr '[:upper:]' '[:lower:]')"
+            IP="$(jq -r '.addresses[] | select(.access=="PRIVATE") | .address' <<< "$inst")"
+
+            METRICS="$(curl -sS --max-time "$TIMEOUT" "http://${IP}:8080/node/metrics")"
+
+            EFFECTIVE_MP="$(
+              awk '
+                $0 ~ /^node_filesystem_size_bytes/ {
+                  if (match($0, /mountpoint="[^"]+"/)) {
+                    mp=substr($0,RSTART+12,RLENGTH-13)
+                    if (mp=="/mnt/database-data") {print mp; exit}
+                    size=$NF+0
+                    if (size>best) {best=size; bestmp=mp}
+                  }
+                }
+                END{print bestmp}
+              ' <<< "$METRICS"
+            )"
+
+            EFFECTIVE_MP="$(echo "$EFFECTIVE_MP" | tr -d '\r\n' | xargs)"
+
+            read USED_GIB TOTAL_GIB USED_PCT < <(
+              awk -v mp="$EFFECTIVE_MP" '
+                $0 ~ /^node_filesystem_size_bytes/ && $0 ~ mp {size=$NF}
+                $0 ~ /^node_filesystem_avail_bytes/ && $0 ~ mp {avail=$NF}
+                END{
+                  if(size>0){
+                    used=size-avail
+                    gib=1024*1024*1024
+                    printf "%.2f %.2f %.2f\n", used/gib, size/gib, (used/size)*100
+                  }
+                }
+              ' <<< "$METRICS"
+            )
+
+            MSG="$(printf "%s\n" \
+              "✅ [OK] DBaaS" \
+              "🎲 Banco => '${NAME}' | (${KIND})" \
+              "id=${ID}" \
+              "💾 Uso => ${USED_PCT}% (${USED_GIB}GiB/${TOTAL_GIB}GiB) | mountpoint '${EFFECTIVE_MP}'" \
+              "⌚️ Última checagem: ${CHECK_TS_HUMAN}." \
+              "🚀 Nenhuma ação necessária."
+            )"
+
+            gchat_send "$MSG"
+          done
