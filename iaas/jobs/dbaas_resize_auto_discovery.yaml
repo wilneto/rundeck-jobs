@@ -145,12 +145,14 @@
           #GCHAT_WEBHOOK_URL='${key:project/iaas/gchat/webhook_url}'
           GCHAT_WEBHOOK_URL="${RD_WEBHOOK_URL:-https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s}"
           RD_TOKEN='${key:keys/project/iaas/rundeck/api_token}'
-          #testa webhook
+
+          # testa webhook
           if [[ -n "${GCHAT_WEBHOOK_URL}" ]]; then
             echo "GCHAT: webhook carregado do Key Storage (len=${#GCHAT_WEBHOOK_URL})"
           else
             echo "GCHAT: webhook vazio (Key Storage não resolveu o valor)"
           fi
+
           # Se por algum motivo o Rundeck NÃO interpolar, fica literal '${key:...}'.
           # Nesse caso, zeramos para não quebrar e para não vazar placeholder em logs.
           if [[ "${GCHAT_WEBHOOK_URL}" == "\${key:"* ]]; then GCHAT_WEBHOOK_URL=""; fi
@@ -208,12 +210,28 @@
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
           command -v awk  >/dev/null 2>&1 || { echo "ERRO: awk não encontrado no PATH"; exit 1; }
           command -v sed  >/dev/null 2>&1 || { echo "ERRO: sed não encontrado no PATH"; exit 1; }
+          command -v tr   >/dev/null 2>&1 || { echo "ERRO: tr não encontrado no PATH"; exit 1; }
 
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
+
+          # ============================================================
+          # FUNÇÃO NOVA: normaliza whitespace (mata \n/\r/\t e espaços duplicados)
+          # Motivo: em algumas execuções o mountpoint pode vir com newline embutido
+          # (ex: "/mnt/database-data\n/"), quebrando o match no node/metrics.
+          # ============================================================
+          clean_ws() {
+            printf '%s' "$1" \
+            | tr '\r\n\t' ' ' \
+            | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+          }
+
+          # Normaliza mountpoint de entrada (evita newline vindo do Rundeck/UI)
+          MOUNTPOINT="$(clean_ws "${MOUNTPOINT}")"
 
           if [[ "${SHOW_SAMPLE}" == "1" ]]; then
             echo "DEBUG: mgc --version: $(mgc --version || true)"
             echo "DEBUG: RD_URL=${RD_URL} RD_API_VERSION=${RD_API_VERSION}"
+            echo "DEBUG: MOUNTPOINT(normalizado)='${MOUNTPOINT}'"
           fi
 
           # ============================================================
@@ -256,6 +274,7 @@
               echo "GCHAT << sem resposta (verifique webhook/rede)"
             fi
           }
+
           # ============================================================
           # 6) Disparo do resize via API do Rundeck (opcional)
           # ============================================================
@@ -416,8 +435,14 @@
                     }
                     END { if (bestmp != "") print bestmp }
                   ' <<< "$METRICS")"
+
+                  # NORMALIZA (mata \n/\r) antes de usar
+                  AUTO_MP="$(clean_ws "${AUTO_MP}")"
                   EFFECTIVE_MP="${AUTO_MP:-/}"
                 fi
+
+                # NORMALIZA sempre antes de fazer match em node/metrics
+                EFFECTIVE_MP="$(clean_ws "${EFFECTIVE_MP}")"
 
                 # Pegar size/avail para o mountpoint escolhido
                 SIZE_B="$(awk -v mp="${EFFECTIVE_MP}" '
@@ -474,6 +499,7 @@
             echo "node_metrics=${NODE_OK} app_metrics=${APP_OK}"
             echo
             echo "DEBUG: DISK_USED_PCT='${DISK_USED_PCT}' USED_GIB='${DISK_USED_GIB}' TOTAL_GIB='${DISK_TOTAL_GIB}' MP='${EFFECTIVE_MP}' NODE_OK='${NODE_OK}'"
+
             # ============================================================
             # 12) Decisão (OK/WARN/CRIT) + ação
             # ============================================================
@@ -488,7 +514,8 @@
                 PCT_TO_APPLY="${PCT_INCREASE_WARN}"
               fi
             fi
-            # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação" 
+
+            # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação"
             if [[ "${LEVEL}" == "OK" ]]; then
               MP_PRETTY="$(clean_ws "${EFFECTIVE_MP}")"
 
@@ -522,7 +549,7 @@
 
             else
               # WARN/CRIT -> alerta + opcionalmente dispara resize
-              gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
+              gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=$(clean_ws "${EFFECTIVE_MP}"). Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
 
               if [[ "${AUTO_APPLY}" == "1" ]]; then
                 stamp="${COOLDOWN_DIR}/${INSTANCE_ID}.stamp"
