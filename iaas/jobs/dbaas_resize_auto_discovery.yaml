@@ -489,21 +489,34 @@
                 PCT_TO_APPLY="${PCT_INCREASE_WARN}"
               fi
             fi
-
             # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação"
             if [[ "${LEVEL}" == "OK" ]]; then
-              if [[ -n "${DISK_USED_PCT}" && -n "${DISK_USED_GIB}" && -n "${DISK_TOTAL_GIB}" ]]; then
-                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}). Uso disco: ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária."
-              else
-                REASON="uso de disco indisponível nesta checagem"
-                if [[ "${NODE_OK}" != "true" ]]; then
-                  REASON="node/metrics inacessível"
-                else
-                  REASON="mountpoint '${EFFECTIVE_MP}' não encontrado no node/metrics (size/avail)"
-                fi
 
-                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}). Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária (${REASON})."
+              # Monta a parte de uso de disco de forma tolerante:
+              # - Se tiver percentual, mostra SEMPRE.
+              # - Se tiver GiB, complementa com (used/total).
+              usage_txt=""
+              if [[ -n "${DISK_USED_PCT}" ]]; then
+                usage_txt="uso=${DISK_USED_PCT}%"
+                if [[ -n "${DISK_USED_GIB}" && -n "${DISK_TOTAL_GIB}" ]]; then
+                  usage_txt="${usage_txt} (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB)"
+                fi
+                usage_txt="${usage_txt} mp=${EFFECTIVE_MP}."
+              else
+                # Sem percentual, tenta explicar por que.
+                reason="uso de disco indisponível nesta checagem"
+                if [[ "${NODE_OK}" != "true" ]]; then
+                  reason="node/metrics inacessível"
+                elif [[ -z "${EFFECTIVE_MP}" ]]; then
+                  reason="mountpoint não definido"
+                else
+                  reason="mountpoint '${EFFECTIVE_MP}' não encontrado no node/metrics (size/avail)"
+                fi
+                usage_txt="${reason}."
               fi
+
+              gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}) ${usage_txt} Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária."
+
             else
               # WARN/CRIT -> alerta + opcionalmente dispara resize
               gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
