@@ -492,10 +492,17 @@
 
             # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação"
             if [[ "${LEVEL}" == "OK" ]]; then
-              if [[ -n "${DISK_USED_PCT}" ]]; then
-                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}) uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária."
+              if [[ -n "${DISK_USED_PCT}" && -n "${DISK_USED_GIB}" && -n "${DISK_TOTAL_GIB}" ]]; then
+                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}). Uso disco: ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária."
               else
-                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}). Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária (uso de disco indisponível nesta checagem)."
+                REASON="uso de disco indisponível nesta checagem"
+                if [[ "${NODE_OK}" != "true" ]]; then
+                  REASON="node/metrics inacessível"
+                else
+                  REASON="mountpoint '${EFFECTIVE_MP}' não encontrado no node/metrics (size/avail)"
+                fi
+
+                gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}). Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária (${REASON})."
               fi
             else
               # WARN/CRIT -> alerta + opcionalmente dispara resize
