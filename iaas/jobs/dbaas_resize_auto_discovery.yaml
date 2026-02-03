@@ -490,36 +490,37 @@
             fi
             # Requisito: se OK -> enviar mensagem no canal com nome/id/%/data e "nenhuma ação" 
             if [[ "${LEVEL}" == "OK" ]]; then
-                MP_PRETTY="$(clean_ws "${EFFECTIVE_MP}")"
-                # Monta uma linha de detalhe:
-                # - se tiver disco calculado, mostra uso
-                # - senão, explica o motivo (como no seu log)
-                DETAIL_LINE=""
-                if [[ -n "${DISK_USED_PCT}" ]]; then
-                  DETAIL_LINE="💾 Uso => ${DISK_USED_PCT}%"
-                  if [[ -n "${DISK_USED_GIB}" && -n "${DISK_TOTAL_GIB}" ]]; then
-                    DETAIL_LINE="${DETAIL_LINE} (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB)"
-                  fi
-                  DETAIL_LINE="${DETAIL_LINE} | mountpoint '${MP_PRETTY}'"
-                else
-                  if [[ "${NODE_OK}" != "true" ]]; then
-                    DETAIL_LINE="🌐 node/metrics inacessível (não foi possível calcular uso)."
-                  else
-                    DETAIL_LINE="🔎 mountpoint '${MP_PRETTY}' não encontrado no node/metrics (size/avail)."
-                  fi
+              MP_PRETTY="$(clean_ws "${EFFECTIVE_MP}")"
+
+              # Monta detalhe do uso (tolerante)
+              if [[ -n "${DISK_USED_PCT}" ]]; then
+                DETAIL_LINE="💾 Uso => ${DISK_USED_PCT}%"
+                if [[ -n "${DISK_USED_GIB}" && -n "${DISK_TOTAL_GIB}" ]]; then
+                  DETAIL_LINE="${DETAIL_LINE} (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB)"
                 fi
-                # Mensagem multi-linha (vai chegar exatamente quebrada no GChat)
-                MSG="$(cat <<EOF
-              ✅ [OK] DBaaS
-              🎲 Banco => '${NAME}' | (${KIND})
-              id=${INSTANCE_ID}
-              ${DETAIL_LINE}
-              ⌚️Última checagem: ${CHECK_TS_HUMAN}.
-              🚀 Nenhuma ação necessária.
-              EOF
-              )"
-                gchat_send "${MSG}"
+                DETAIL_LINE="${DETAIL_LINE} | mountpoint '${MP_PRETTY}'"
               else
+                if [[ "${NODE_OK}" != "true" ]]; then
+                  DETAIL_LINE="🌐 node/metrics inacessível (não foi possível calcular uso)."
+                else
+                  DETAIL_LINE="🔎 mountpoint '${MP_PRETTY}' não encontrado no node/metrics (size/avail)."
+                fi
+              fi
+
+              # Mensagem multi-linha SEM heredoc (evita bug de EOF no Rundeck)
+              MSG=$(
+                printf "%s\n" \
+                  "✅ [OK] DBaaS" \
+                  "🎲 Banco => '${NAME}' | (${KIND})" \
+                  "id=${INSTANCE_ID}" \
+                  "${DETAIL_LINE}" \
+                  "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
+                  "🚀 Nenhuma ação necessária."
+              )
+
+              gchat_send "${MSG}"
+
+            else
               # WARN/CRIT -> alerta + opcionalmente dispara resize
               gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
 
