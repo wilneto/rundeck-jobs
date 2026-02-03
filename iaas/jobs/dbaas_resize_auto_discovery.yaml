@@ -514,9 +514,7 @@
                 fi
                 usage_txt="${reason}."
               fi
-
               gchat_send "✅ [OK] DBaaS '${NAME}' id=${INSTANCE_ID} (${KIND}) ${usage_txt} Última checagem: ${CHECK_TS_HUMAN}. Nenhuma ação necessária."
-
             else
               # WARN/CRIT -> alerta + opcionalmente dispara resize
               gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=${EFFECTIVE_MP}. Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
