@@ -108,6 +108,11 @@
       required: false
       value: "52"
 
+    - name: RD_WEBHOOK_URL
+      label: Url webhook Chat Comunication
+      required: true
+      value: "https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s"
+
   sequence:
     keepgoing: false
     strategy: node-first
@@ -137,7 +142,8 @@
           #   https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s
           # ============================================================
           #GCHAT_WEBHOOK_URL='${key:keys/project/iaas/gchat/webhook_url}'
-          GCHAT_WEBHOOK_URL='${key:project/iaas/gchat/webhook_url}'
+          #GCHAT_WEBHOOK_URL='${key:project/iaas/gchat/webhook_url}'
+          GCHAT_WEBHOOK_URL="${RD_WEBHOOK_URL:-https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s}"
           RD_TOKEN='${key:keys/project/iaas/rundeck/api_token}'
           #testa webhook
           if [[ -n "${GCHAT_WEBHOOK_URL}" ]]; then
