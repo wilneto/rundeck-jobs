@@ -1,0 +1,304 @@
+- id: mgc-object-storage-sync-path
+  name: "MGC - Object Storage - Sync path (local/ssh/nodes)"
+  group: "MGC/Object-Storage"
+  description: "MGC Object Storage: envia um diretório para bucket/prefix. Suporta execução local, via SSH (IPs) ou em múltiplos nodes do Rundeck."
+  loglevel: INFO
+  defaultTab: output
+  executionEnabled: true
+  scheduleEnabled: false
+  nodeFilterEditable: true
+
+  options:
+    - name: EXEC_TARGET
+      label: Onde executar?
+      description: "local = executa no node atual. ssh = conecta via SSH nos IPs informados. rundeck_nodes = Rundeck despacha para nodes (recomendado)."
+      required: true
+      values:
+        - local
+        - ssh
+        - rundeck_nodes
+      value: "local"
+
+    - name: NODE_FILTER
+      label: Filtro de Nodes (somente EXEC_TARGET=rundeck_nodes)
+      description: "Filtro do Rundeck (ex: tags:backup or name:vm-01)."
+      required: false
+      value: ".*"
+
+    - name: SSH_HOSTS
+      label: IPs/Hosts (somente EXEC_TARGET=ssh)
+      description: "Lista separada por vírgula. Ex: 10.0.0.10,10.0.0.11"
+      required: false
+      value: ""
+
+    - name: SSH_USER
+      label: SSH user (somente EXEC_TARGET=ssh)
+      required: false
+      value: "ubuntu"
+
+    - name: SSH_PORT
+      label: SSH port (somente EXEC_TARGET=ssh)
+      required: false
+      value: "22"
+
+    - name: SSH_KEY_PATH
+      label: Caminho da chave SSH (somente EXEC_TARGET=ssh)
+      description: "Ex: /var/lib/rundeck/.ssh/id_rsa (precisa existir no servidor do Rundeck). Se vazio, usa método padrão do ssh (agent/default keys)."
+      required: false
+      value: ""
+
+    - name: API_KEY
+      label: MGC API Key
+      description: "API Key com permissão de Object Storage."
+      required: true
+      secure: true
+      valueExposed: true
+
+    - name: REGION
+      label: Região
+      description: "Região do Object Storage (ex: br-se1)."
+      required: true
+      value: "br-se1"
+
+    - name: BUCKET
+      label: Bucket
+      description: "Nome do bucket (sem barras). Ex: backups-app"
+      required: true
+
+    - name: PREFIX
+      label: Prefixo (pasta no bucket)
+      description: "Caminho/pasta lógica no bucket. Ex: clienteA/app1/2026-02-04 (opcional)."
+      required: false
+      value: ""
+
+    - name: LOCAL_PATH
+      label: Caminho local (no alvo escolhido)
+      description: "Diretório local NO alvo (local/ssh/node) que será enviado."
+      required: true
+
+    - name: MODE
+      label: Modo de envio
+      description: "sync = idempotente (recomendado). upload-dir = upload recursivo simples."
+      required: true
+      values:
+        - sync
+        - upload-dir
+      value: "sync"
+
+    - name: DELETE_NOT_PRESENT
+      label: Apagar no bucket o que não existe localmente? (somente MODE=sync)
+      description: "true/false. Se true, usa --delete no sync."
+      required: true
+      values:
+        - "false"
+        - "true"
+      value: "false"
+
+    - name: STORAGE_CLASS
+      label: Storage Class (somente MODE=upload-dir)
+      description: "standard | cold | cold_instant | glacier_ir (opcional)."
+      required: false
+      value: ""
+
+  # Para EXEC_TARGET=rundeck_nodes, o Rundeck executa este job nos nodes filtrados
+  nodefilters:
+    filter: "${option.NODE_FILTER}"
+
+  dispatch:
+    threadcount: 10
+    keepgoing: false
+    excludePrecedence: true
+
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+          # --------- opções ---------
+          EXEC_TARGET="${RD_OPTION_EXEC_TARGET}"
+
+          API_KEY="${RD_OPTION_API_KEY}"
+          REGION="${RD_OPTION_REGION}"
+          BUCKET="${RD_OPTION_BUCKET}"
+          PREFIX="${RD_OPTION_PREFIX:-}"
+          LOCAL_PATH="${RD_OPTION_LOCAL_PATH}"
+          MODE="${RD_OPTION_MODE}"
+          DELETE_NOT_PRESENT="${RD_OPTION_DELETE_NOT_PRESENT}"
+          STORAGE_CLASS="${RD_OPTION_STORAGE_CLASS:-}"
+
+          SSH_HOSTS="${RD_OPTION_SSH_HOSTS:-}"
+          SSH_USER="${RD_OPTION_SSH_USER:-ubuntu}"
+          SSH_PORT="${RD_OPTION_SSH_PORT:-22}"
+          SSH_KEY_PATH="${RD_OPTION_SSH_KEY_PATH:-}"
+
+          # --------- imprime contexto do node (IP/host) ---------
+          RD_NODE_HOSTNAME="${RD_NODE_HOSTNAME:-}"
+          RD_NODE_NAME="${RD_NODE_NAME:-}"
+          RD_NODE_IP="${RD_NODE_IPADDRESS:-}"
+
+          log "Job: ${RD_JOB_NAME:-"(n/a)"} | ID fixo: mgc-object-storage-sync-path"
+          log "Exec target: ${EXEC_TARGET}"
+          log "NodeName: ${RD_NODE_NAME:-"(n/a)"} | Hostname: ${RD_NODE_HOSTNAME:-"(n/a)"} | IP: ${RD_NODE_IP:-"(n/a)"}"
+          log "LOCAL_PATH (no alvo): ${LOCAL_PATH}"
+
+          # --------- função core: garantir bucket e enviar ---------
+          mgc_sync_local() {
+            local api_key="$1" region="$2" bucket="$3" prefix="$4" local_path="$5" mode="$6" delete_not_present="$7" storage_class="$8"
+
+            if [[ ! -d "$local_path" ]]; then
+              echo "ERRO: LOCAL_PATH não existe no alvo: $local_path" >&2
+              exit 2
+            fi
+
+            if ! command -v mgc >/dev/null 2>&1; then
+              echo "ERRO: 'mgc' não encontrado no PATH do alvo." >&2
+              exit 3
+            fi
+
+            prefix="${prefix#/}"
+            if [[ -n "$prefix" && "${prefix: -1}" != "/" ]]; then
+              prefix="${prefix}/"
+            fi
+
+            local dest_uri="${bucket}/${prefix}"
+            log "Destino: ${dest_uri} (region=${region})"
+
+            log "Checando bucket..."
+            if mgc object-storage buckets list --api-key="${api_key}" --region="${region}" -o json -r 2>/dev/null \
+                | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${bucket}\""; then
+              log "Bucket OK: ${bucket}"
+            else
+              log "Criando bucket: ${bucket}"
+              mgc object-storage buckets create "${bucket}" --api-key="${api_key}" --region="${region}" --no-confirm -o table
+            fi
+
+            case "${mode}" in
+              sync)
+                local args=()
+                if [[ "${delete_not_present}" == "true" ]]; then
+                  args+=(--delete)
+                  log "SYNC com --delete habilitado"
+                fi
+
+                log "Executando: mgc object-storage objects sync"
+                mgc object-storage objects sync \
+                  --api-key="${api_key}" \
+                  --region="${region}" \
+                  --local="${local_path}" \
+                  --bucket="${dest_uri}" \
+                  "${args[@]}" \
+                  --no-confirm \
+                  -o table
+                ;;
+              upload-dir)
+                local up_args=()
+                if [[ -n "${storage_class}" ]]; then
+                  up_args+=(--storage-class="${storage_class}")
+                  log "Upload-dir com storage-class=${storage_class}"
+                fi
+
+                log "Executando: mgc object-storage objects upload-dir"
+                mgc object-storage objects upload-dir \
+                  --api-key="${api_key}" \
+                  --region="${region}" \
+                  --src="${local_path}" \
+                  --dst="${dest_uri}" \
+                  "${up_args[@]}" \
+                  --no-confirm \
+                  -o table
+                ;;
+              *)
+                echo "ERRO: MODE inválido: ${mode}" >&2
+                exit 4
+                ;;
+            esac
+          }
+
+          # --------- EXEC_TARGET switch ---------
+          if [[ "${EXEC_TARGET}" == "local" ]]; then
+            mgc_sync_local "${API_KEY}" "${REGION}" "${BUCKET}" "${PREFIX}" "${LOCAL_PATH}" "${MODE}" "${DELETE_NOT_PRESENT}" "${STORAGE_CLASS}"
+            log "Concluído (local) ✅"
+            exit 0
+          fi
+
+          if [[ "${EXEC_TARGET}" == "rundeck_nodes" ]]; then
+            # Nesse modo o Rundeck executa este job em cada node selecionado.
+            mgc_sync_local "${API_KEY}" "${REGION}" "${BUCKET}" "${PREFIX}" "${LOCAL_PATH}" "${MODE}" "${DELETE_NOT_PRESENT}" "${STORAGE_CLASS}"
+            log "Concluído (node) ✅"
+            exit 0
+          fi
+
+          if [[ "${EXEC_TARGET}" == "ssh" ]]; then
+            if [[ -z "${SSH_HOSTS// /}" ]]; then
+              echo "ERRO: informe SSH_HOSTS para EXEC_TARGET=ssh" >&2
+              exit 5
+            fi
+
+            SSH_OPTS=(-p "${SSH_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+            if [[ -n "${SSH_KEY_PATH}" ]]; then
+              SSH_OPTS+=(-i "${SSH_KEY_PATH}")
+            fi
+
+            # Script remoto (executa dentro da VM alvo)
+            REMOTE_SCRIPT='
+              set -euo pipefail
+              log(){ echo "[$(date "+%Y-%m-%d %H:%M:%S")] $*"; }
+
+              API_KEY="$1"; REGION="$2"; BUCKET="$3"; PREFIX="$4"; LOCAL_PATH="$5"; MODE="$6"; DELETE_NOT_PRESENT="$7"; STORAGE_CLASS="$8"
+
+              log "Remote host: $(hostname -f 2>/dev/null || hostname) | IPs: $(hostname -I 2>/dev/null || true)"
+              log "LOCAL_PATH: ${LOCAL_PATH}"
+
+              if [[ ! -d "$LOCAL_PATH" ]]; then
+                echo "ERRO: LOCAL_PATH não existe no remoto: $LOCAL_PATH" >&2
+                exit 2
+              fi
+              command -v mgc >/dev/null 2>&1 || { echo "ERRO: mgc não encontrado no remoto" >&2; exit 3; }
+
+              PREFIX="${PREFIX#/}"
+              if [[ -n "$PREFIX" && "${PREFIX: -1}" != "/" ]]; then PREFIX="${PREFIX}/"; fi
+              DEST_URI="${BUCKET}/${PREFIX}"
+
+              log "Checando bucket..."
+              if mgc object-storage buckets list --api-key="${API_KEY}" --region="${REGION}" -o json -r 2>/dev/null \
+                  | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${BUCKET}\""; then
+                log "Bucket OK: ${BUCKET}"
+              else
+                log "Criando bucket: ${BUCKET}"
+                mgc object-storage buckets create "${BUCKET}" --api-key="${API_KEY}" --region="${REGION}" --no-confirm -o table
+              fi
+
+              if [[ "${MODE}" == "sync" ]]; then
+                ARGS=()
+                if [[ "${DELETE_NOT_PRESENT}" == "true" ]]; then ARGS+=(--delete); fi
+                mgc object-storage objects sync --api-key="${API_KEY}" --region="${REGION}" --local="${LOCAL_PATH}" --bucket="${DEST_URI}" "${ARGS[@]}" --no-confirm -o table
+              else
+                UP_ARGS=()
+                if [[ -n "${STORAGE_CLASS}" ]]; then UP_ARGS+=(--storage-class="${STORAGE_CLASS}"); fi
+                mgc object-storage objects upload-dir --api-key="${API_KEY}" --region="${REGION}" --src="${LOCAL_PATH}" --dst="${DEST_URI}" "${UP_ARGS[@]}" --no-confirm -o table
+              fi
+
+              log "Concluído (remote) ✅"
+            '
+
+            IFS=',' read -r -a HOSTS <<< "${SSH_HOSTS}"
+            for h in "${HOSTS[@]}"; do
+              host="$(echo "$h" | xargs)"
+              [[ -z "$host" ]] && continue
+              log "SSH -> ${SSH_USER}@${host}:${SSH_PORT} | ${LOCAL_PATH} -> ${BUCKET}/${PREFIX}"
+              ssh "${SSH_OPTS[@]}" "${SSH_USER}@${host}" \
+                "bash -s -- '${API_KEY}' '${REGION}' '${BUCKET}' '${PREFIX}' '${LOCAL_PATH}' '${MODE}' '${DELETE_NOT_PRESENT}' '${STORAGE_CLASS}'" \
+                <<< "${REMOTE_SCRIPT}"
+            done
+
+            log "Concluído (ssh multi-host) ✅"
+            exit 0
+          fi
+
+          echo "ERRO: EXEC_TARGET inválido: ${EXEC_TARGET}" >&2
+          exit 9
