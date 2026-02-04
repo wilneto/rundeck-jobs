@@ -1,3 +1,10 @@
+# ==============================================================================
+# Script: mgc-recize-disck-dbaas
+# Autor: Wilson Lucena 
+# Data: 2026-02-04
+# Descrição: Reaiza rezise automático dos bancos de dados   
+# ==============================================================================
+
 - id: mgc-recize-disck-dbaas
   name: "MGC - DBaaS Disk Resize (+%)"
   description: |-
