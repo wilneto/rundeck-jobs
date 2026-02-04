@@ -1,3 +1,13 @@
+# ==============================================================================
+# Script: dbaas_resize_auto_discovery
+# Autor: Wilson Lucena 
+# Data: 2026-02-04
+# Descrição: Varre os bancos de dados na MGC verifica o tamanho do disco e o uso 
+#            avisa em um canal do Gchat e conforme parâmetros pode sugerir um 
+#.           recize ou disparar um outro job que faz o recize automatico. 
+# ==============================================================================
+
+
 - id: dbaas_resize_auto_discovery
   defaultTab: output
   description: "Auto discovery DBaaS (API + métricas) com alerta no GChat e resize automático opcional."
