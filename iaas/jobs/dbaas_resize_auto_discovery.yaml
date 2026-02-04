@@ -534,7 +534,7 @@
               MSG="$(printf "%s\n" \
                 "✅ [OK] DBaaS" \
                 "🎲 Banco => '${NAME}' | (${KIND})" \
-                "id=${INSTANCE_ID}" \
+                "🪪 id=${INSTANCE_ID}" \
                 "${DETAIL_LINE}" \
                 "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
                 "🚀 Nenhuma ação necessária."
@@ -547,7 +547,7 @@
               ALERT_MSG="$(printf "%s\n" \
                 "🚨 [${LEVEL}] DBaaS" \
                 "🎲 Banco => '${NAME}' | (${KIND})" \
-                "id=${INSTANCE_ID} | region=${REGION}" \
+                "🪪 id=${INSTANCE_ID} | region=${REGION}" \
                 "💾 Uso => ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) | mountpoint '${EFFECTIVE_MP}'" \
                 "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
                 "📈 Sugestão: +${PCT_TO_APPLY}%."
@@ -566,7 +566,7 @@
                   gchat_send "$(printf "%s\n" \
                     "⏳ Cooldown" \
                     "🎲 Banco => '${NAME}' | (${KIND})" \
-                    "id=${INSTANCE_ID}" \
+                    "🪪 id=${INSTANCE_ID}" \
                     "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
                     "🚫 Não disparei resize (cooldown ativo)."
                   )"
@@ -580,7 +580,7 @@
                     gchat_send "$(printf "%s\n" \
                       "✅ Resize disparado" \
                       "🎲 Banco => '${NAME}' | (${KIND})" \
-                      "id=${INSTANCE_ID}" \
+                      "🪪 id=${INSTANCE_ID}" \
                       "📈 Aumento: +${PCT_TO_APPLY}%" \
                       "🧾 Execução: ${exec_id}" \
                       "⌚️Última checagem: ${CHECK_TS_HUMAN}."
@@ -591,7 +591,7 @@
                     gchat_send "$(printf "%s\n" \
                       "⚠️ Falha ao disparar resize" \
                       "🎲 Banco => '${NAME}' | (${KIND})" \
-                      "id=${INSTANCE_ID}" \
+                      "🪪 id=${INSTANCE_ID}" \
                       "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
                       "🔎 Verifique o Rundeck (não identifiquei execution id)."
                     )"
