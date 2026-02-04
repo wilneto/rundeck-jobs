@@ -125,6 +125,13 @@
           # ============================================================
           # 0) SEGREDOS (Key Storage)
           #
+          # IMPORTANTE:
+          # - NÃO use ${key:...} sem aspas, senão o Bash tenta expandir "key"
+          #   e com set -u dá: "key: unbound variable"
+          #
+          # Coloque como string literal (aspas simples) e o Rundeck faz
+          # a interpolação antes do script executar.
+          #
           # (Manutenção futura)
           # - Webhook GChat fica em:
           #     keys/project/iaas/gchat/webhook_url
@@ -134,17 +141,21 @@
           # - Link do canal (referência):
           #   https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s
           # ============================================================
-          GCHAT_WEBHOOK_URL="${RD_WEBHOOK_URL:-https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s}"
+          # Sugestão (se preferir Key Storage):
+          # GCHAT_WEBHOOK_URL='${key:keys/project/iaas/gchat/webhook_url}'
+
+          GCHAT_WEBHOOK_URL="${RD_OPTION_RD_WEBHOOK_URL:-}"
           RD_TOKEN='${key:keys/project/iaas/rundeck/api_token}'
 
-          if [[ -n "${GCHAT_WEBHOOK_URL}" ]]; then
-            echo "GCHAT: webhook carregado do Key Storage (len=${#GCHAT_WEBHOOK_URL})"
-          else
-            echo "GCHAT: webhook vazio (Key Storage não resolveu o valor)"
-          fi
-
+          # Se por algum motivo o Rundeck NÃO interpolar, fica literal '${key:...}'.
           if [[ "${GCHAT_WEBHOOK_URL}" == "\${key:"* ]]; then GCHAT_WEBHOOK_URL=""; fi
           if [[ "${RD_TOKEN}" == "\${key:"* ]]; then RD_TOKEN=""; fi
+
+          if [[ -n "${GCHAT_WEBHOOK_URL}" ]]; then
+            echo "GCHAT: webhook carregado do Key Storage/Option (len=${#GCHAT_WEBHOOK_URL})"
+          else
+            echo "GCHAT: webhook vazio (mensagens não serão enviadas)"
+          fi
 
           # ============================================================
           # 1) Inputs (Rundeck exporta options em RD_OPTION_*)
@@ -198,35 +209,23 @@
           command -v curl >/dev/null 2>&1 || { echo "ERRO: curl não encontrado no PATH"; exit 1; }
           command -v awk  >/dev/null 2>&1 || { echo "ERRO: awk não encontrado no PATH"; exit 1; }
           command -v sed  >/dev/null 2>&1 || { echo "ERRO: sed não encontrado no PATH"; exit 1; }
-          command -v tr   >/dev/null 2>&1 || { echo "ERRO: tr não encontrado no PATH"; exit 1; }
 
           strip_ansi() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
-          # ============================================================
-          # Funções de limpeza
-          # - clean_ws: p/ texto geral (vira newline em espaço)
-          # - clean_path: p/ path (REMOVE newline, não vira espaço!)
-          # ============================================================
-          clean_ws() {
-            printf '%s' "$1" \
-            | tr '\r\n\t' ' ' \
-            | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+          # Sanitiza espaços/linhas: remove \r, \n, tabs, e colapsa múltiplos espaços
+          clean_mp() {
+            local s="${1:-}"
+            s="${s//$'\r'/}"
+            s="${s//$'\n'/}"
+            s="${s//$'\t'/ }"
+            # trim + colapsa espaços
+            s="$(echo "$s" | awk '{$1=$1;print}')"
+            echo "$s"
           }
-
-          clean_path() {
-            # remove \r \n \t completamente para não virar "/mnt/database-data /"
-            printf '%s' "$1" \
-            | tr -d '\r\n\t' \
-            | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
-          }
-
-          # Normaliza mountpoint de entrada como PATH
-          MOUNTPOINT="$(clean_path "${MOUNTPOINT}")"
 
           if [[ "${SHOW_SAMPLE}" == "1" ]]; then
             echo "DEBUG: mgc --version: $(mgc --version || true)"
             echo "DEBUG: RD_URL=${RD_URL} RD_API_VERSION=${RD_API_VERSION}"
-            echo "DEBUG: MOUNTPOINT(normalizado)='${MOUNTPOINT}'"
           fi
 
           # ============================================================
@@ -245,6 +244,8 @@
           # ============================================================
           gchat_send() {
             local msg="$1"
+
+            # Sempre mostra no log o que vai para o GChat
             echo "GCHAT >> ${msg}"
 
             if [[ -z "${GCHAT_WEBHOOK_URL}" ]]; then
@@ -277,6 +278,7 @@
 
             local url="${RD_URL}/api/${RD_API_VERSION}/job/${RESIZE_JOB_UUID}/run"
 
+            # Ajuste estes names se o seu job de resize usar outros nomes de option.
             local payload
             payload="$(jq -n \
               --arg api_key "${API_KEY}" \
@@ -409,77 +411,55 @@
                 METRICS="$(curl -sS --max-time "${TIMEOUT}" "${NODE_URL}")"
 
                 # ------------------------------------------------------------
-                # Auto-detect robusto do mountpoint de dados (MySQL + Postgres)
-                # Estratégia:
-                # - percorre node_filesystem_size_bytes
-                # - ignora tmpfs e mounts de sistema
-                # - escolhe o MAIOR filesystem
-                # - prioridade absoluta /mnt/database-data
-                # Sem pipes no final (sem head) -> evita SIGPIPE
+                # Coleta de disco (baseada no seu collector que funciona)
+                # - prioridade: /mnt/database-data
+                # - fallback: maior filesystem ignorando mounts de sistema
                 # ------------------------------------------------------------
                 if [[ -z "${MOUNTPOINT}" || "${MOUNTPOINT}" == "/" ]]; then
-                  AUTO_MP="$(echo "$METRICS" | awk '
-                    $0 ~ /^node_filesystem_size_bytes\{/ &&
-                    $0 !~ /fstype="tmpfs"/ {
+                  AUTO_MP="$(awk '
+                    $0 ~ /^node_filesystem_size_bytes\{/ && $0 !~ /fstype="tmpfs"/ {
                       if (match($0, /mountpoint="[^"]+"/)) {
                         mp = substr($0, RSTART+12, RLENGTH-13)
-
-                        # ignora mounts de sistema
-                        if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys")
-                          next
-
-                        size = $NF + 0
-
-                        # prioridade absoluta
-                        if (mp == "/mnt/database-data") {
-                          bestmp = mp
-                          best = size
-                          exit
-                        }
-
-                        # fallback: maior filesystem
-                        if (size > best) {
-                          best = size
-                          bestmp = mp
-                        }
+                        if (mp ~ /^\/run/ || mp=="/boot" || mp=="/boot/efi" || mp=="/proc" || mp=="/sys") next
+                        size = $NF
+                        if (mp == "/mnt/database-data") preferred = mp
+                        if (size > best) { best = size; bestmp = mp }
                       }
                     }
-                    END { if (bestmp != "") print bestmp }
-                  ')"
+                    END {
+                      if (preferred != "") print preferred;
+                      else if (bestmp != "") print bestmp;
+                    }
+                  ' <<< "$METRICS")"
                   EFFECTIVE_MP="${AUTO_MP:-/}"
                 fi
 
-                # normaliza como PATH (remove newline, sem virar espaço!)
-                EFFECTIVE_MP="$(clean_path "${EFFECTIVE_MP}")"
+                # Sanitiza mountpoint (remove \n/\r e espaços extras)
+                EFFECTIVE_MP="$(clean_mp "${EFFECTIVE_MP}")"
 
-                if [[ "${SHOW_SAMPLE}" == "1" ]]; then
-                  echo "DEBUG: ${NAME} mountpoint efetivo='${EFFECTIVE_MP}' (preferido='${MOUNTPOINT}')"
-                  echo "DEBUG: filesystem candidates (size):"
-                  echo "$METRICS" | egrep '^node_filesystem_size_bytes' | head -n 12 || true
-                fi
-
-                # ------------------------------------------------------------
-                # Coleta size/avail para o mountpoint efetivo
-                # ------------------------------------------------------------
-                SIZE_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                # Coleta size/avail (awk entende notação científica)
+                SIZE_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_size_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
-                ')"
-                AVAIL_B="$(echo "$METRICS" | awk -v mp="${EFFECTIVE_MP}" '
+                  $0 !~ /fstype="tmpfs"/ { val=$NF }
+                  END { if (val!="") print val }
+                ' <<< "$METRICS")"
+
+                AVAIL_B="$(awk -v mp="${EFFECTIVE_MP}" '
                   $0 ~ /^node_filesystem_avail_bytes\{/ &&
                   $0 ~ "mountpoint=\""mp"\"" &&
-                  $0 !~ "fstype=\"tmpfs\"" {print $NF; exit}
-                ')"
+                  $0 !~ /fstype="tmpfs"/ { val=$NF }
+                  END { if (val!="") print val }
+                ' <<< "$METRICS")"
 
-                # Calcular tudo em AWK (evita aritmética bash com e+10)
+                # Calcula tudo em AWK (evita bash com e+10)
                 if [[ -n "${SIZE_B}" && -n "${AVAIL_B}" ]]; then
                   read -r DISK_USED_GIB DISK_FREE_GIB DISK_TOTAL_GIB DISK_USED_PCT < <(
                     awk -v size="${SIZE_B}" -v avail="${AVAIL_B}" '
                       BEGIN {
                         s = size + 0
                         a = avail + 0
-                        if (s <= 0) { exit 0 }
+                        if (s <= 0) exit 0
                         u = s - a
                         gib = 1024*1024*1024
                         printf "%.2f %.2f %.2f %.2f\n", (u/gib), (a/gib), (s/gib), ((u/s)*100)
@@ -487,9 +467,13 @@
                     '
                   )
                 fi
+
+                if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+                  echo "DEBUG: ${NAME} mp=${EFFECTIVE_MP} size_b=${SIZE_B:-NA} avail_b=${AVAIL_B:-NA} used_pct=${DISK_USED_PCT:-NA}"
+                fi
               fi
 
-              # Endpoint por engine (docs oficiais)
+              # Endpoint por engine
               case "$KIND" in
                 mysql)    APP_URL="http://${DB_IP}:8080/mysql/metrics" ;;
                 postgres) APP_URL="http://${DB_IP}:8080/postgres/metrics" ;;
@@ -511,13 +495,17 @@
             fi
             echo "node_metrics=${NODE_OK} app_metrics=${APP_OK}"
             echo
-            echo "DEBUG: DISK_USED_PCT='${DISK_USED_PCT}' USED_GIB='${DISK_USED_GIB}' TOTAL_GIB='${DISK_TOTAL_GIB}' MP='${EFFECTIVE_MP}' NODE_OK='${NODE_OK}'"
+
+            if [[ "${SHOW_SAMPLE}" == "1" ]]; then
+              echo "DEBUG: DISK_USED_PCT='${DISK_USED_PCT}' USED_GIB='${DISK_USED_GIB}' TOTAL_GIB='${DISK_TOTAL_GIB}' MP='${EFFECTIVE_MP}' NODE_OK='${NODE_OK}'"
+            fi
 
             # ============================================================
             # 12) Decisão (OK/WARN/CRIT) + ação
             # ============================================================
             LEVEL="OK"
             PCT_TO_APPLY=""
+
             if [[ -n "${DISK_USED_PCT}" ]]; then
               if awk -v v="${DISK_USED_PCT}" -v t="${THRESHOLD_CRIT}" 'BEGIN{ exit !(v+0 >= t+0) }'; then
                 LEVEL="CRIT"
@@ -528,32 +516,43 @@
               fi
             fi
 
+            # ============================================================
+            # 12.1) Mensagem OK no formato que você pediu
+            # ============================================================
             if [[ "${LEVEL}" == "OK" ]]; then
-              MP_PRETTY="$(clean_path "${EFFECTIVE_MP}")"
-
+              DETAIL_LINE=""
               if [[ -n "${DISK_USED_PCT}" ]]; then
-                DETAIL_LINE="💾 Uso => ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) | mountpoint '${MP_PRETTY}'"
+                DETAIL_LINE="💾 Uso => ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) | mountpoint '${EFFECTIVE_MP}'"
               else
                 if [[ "${NODE_OK}" != "true" ]]; then
                   DETAIL_LINE="🌐 node/metrics inacessível (não foi possível calcular uso)."
                 else
-                  DETAIL_LINE="🔎 mountpoint '${MP_PRETTY}' não encontrado no node/metrics (size/avail)."
+                  DETAIL_LINE="🔎 mountpoint '${EFFECTIVE_MP}' não encontrado no node/metrics (size/avail)."
                 fi
               fi
 
-              MSG=$(
-                printf "%s\n" \
-                  "✅ [OK] DBaaS" \
-                  "🎲 Banco => '${NAME}' | (${KIND})" \
-                  "id=${INSTANCE_ID}" \
-                  "${DETAIL_LINE}" \
-                  "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
-                  "🚀 Nenhuma ação necessária."
-              )
+              MSG="$(printf "%s\n" \
+                "✅ [OK] DBaaS" \
+                "🎲 Banco => '${NAME}' | (${KIND})" \
+                "id=${INSTANCE_ID}" \
+                "${DETAIL_LINE}" \
+                "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
+                "🚀 Nenhuma ação necessária."
+              )"
+
               gchat_send "${MSG}"
 
             else
-              gchat_send "🚨 [${LEVEL}] DBaaS '${NAME}' (${KIND}) id=${INSTANCE_ID} region=${REGION} uso=${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) mp=$(clean_path "${EFFECTIVE_MP}"). Última checagem: ${CHECK_TS_HUMAN}. Sugestão: +${PCT_TO_APPLY}%."
+              # WARN/CRIT -> alerta + opcionalmente dispara resize
+              ALERT_MSG="$(printf "%s\n" \
+                "🚨 [${LEVEL}] DBaaS" \
+                "🎲 Banco => '${NAME}' | (${KIND})" \
+                "id=${INSTANCE_ID} | region=${REGION}" \
+                "💾 Uso => ${DISK_USED_PCT}% (${DISK_USED_GIB}GiB/${DISK_TOTAL_GIB}GiB) | mountpoint '${EFFECTIVE_MP}'" \
+                "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
+                "📈 Sugestão: +${PCT_TO_APPLY}%."
+              )"
+              gchat_send "${ALERT_MSG}"
 
               if [[ "${AUTO_APPLY}" == "1" ]]; then
                 stamp="${COOLDOWN_DIR}/${INSTANCE_ID}.stamp"
@@ -564,7 +563,13 @@
                 age=$(( now_epoch - last ))
                 if (( last > 0 && age < cooldown_sec )); then
                   echo "INFO: cooldown ativo p/ ${NAME} (id=${INSTANCE_ID}). Pulando auto-apply."
-                  gchat_send "⏳ Cooldown: DBaaS '${NAME}' id=${INSTANCE_ID} ainda dentro do cooldown, não disparei resize. Última checagem: ${CHECK_TS_HUMAN}."
+                  gchat_send "$(printf "%s\n" \
+                    "⏳ Cooldown" \
+                    "🎲 Banco => '${NAME}' | (${KIND})" \
+                    "id=${INSTANCE_ID}" \
+                    "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
+                    "🚫 Não disparei resize (cooldown ativo)."
+                  )"
                 else
                   echo "INFO: disparando resize job para ${NAME} (id=${INSTANCE_ID}) com +${PCT_TO_APPLY}% ..."
                   resp="$(rundeck_run_resize_job "${INSTANCE_ID}" "${NAME}" "${PCT_TO_APPLY}" || true)"
@@ -572,11 +577,24 @@
 
                   if [[ -n "${exec_id}" ]]; then
                     echo "OK: resize job disparado. execution_id=${exec_id}"
-                    gchat_send "✅ Resize disparado: DBaaS '${NAME}' id=${INSTANCE_ID} (+${PCT_TO_APPLY}%). Execução: ${exec_id}. Última checagem: ${CHECK_TS_HUMAN}."
+                    gchat_send "$(printf "%s\n" \
+                      "✅ Resize disparado" \
+                      "🎲 Banco => '${NAME}' | (${KIND})" \
+                      "id=${INSTANCE_ID}" \
+                      "📈 Aumento: +${PCT_TO_APPLY}%" \
+                      "🧾 Execução: ${exec_id}" \
+                      "⌚️Última checagem: ${CHECK_TS_HUMAN}."
+                    )"
                     echo "${now_epoch}" > "${stamp}"
                   else
                     echo "WARN: não consegui identificar execution id. Resposta: ${resp}"
-                    gchat_send "⚠️ Tentei disparar resize do DBaaS '${NAME}' (id=${INSTANCE_ID}), mas não identifiquei execução. Verifique Rundeck. Última checagem: ${CHECK_TS_HUMAN}."
+                    gchat_send "$(printf "%s\n" \
+                      "⚠️ Falha ao disparar resize" \
+                      "🎲 Banco => '${NAME}' | (${KIND})" \
+                      "id=${INSTANCE_ID}" \
+                      "⌚️Última checagem: ${CHECK_TS_HUMAN}." \
+                      "🔎 Verifique o Rundeck (não identifiquei execution id)."
+                    )"
                   fi
                 fi
               fi
