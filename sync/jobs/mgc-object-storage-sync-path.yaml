@@ -1,6 +1,5 @@
 - id: mgc-object-storage-sync-path
   name: "MGC - Object Storage - Sync path (local/ssh/nodes)"
-  group: "MGC/Object-Storage"
   description: "Envia um diretório para Object Storage (bucket/prefix). Suporta execução local, via SSH (IPs) ou em múltiplos nodes do Rundeck. Bucket por tenant: usa API_KEY (controle) + OBJ_KEY_ID/OBJ_KEY_SECRET (objetos)."
   loglevel: INFO
   defaultTab: output
