@@ -121,7 +121,7 @@
     - name: RD_WEBHOOK_URL
       label: Url webhook Chat Comunication
       required: true
-      value: "https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s"
+      value: "<<SUA-API-KEY>>"
 
   sequence:
     keepgoing: false
@@ -149,7 +149,7 @@
           #     keys/project/iaas/rundeck/api_token
           #
           # - Link do canal (referência):
-          #   https://chat.googleapis.com/v1/spaces/AAQAZtSBxyQ/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=bkWgUVT9LmVIV93vxaw3koLvfOi0UeCoxoyT4eH_B2s
+          #   
           # ============================================================
           # Sugestão (se preferir Key Storage):
           # GCHAT_WEBHOOK_URL='${key:keys/project/iaas/gchat/webhook_url}'
