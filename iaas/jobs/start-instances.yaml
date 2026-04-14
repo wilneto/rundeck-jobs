@@ -1,0 +1,209 @@
+# ==============================================================================
+# Script: start-instances
+# Autor: Wilson Lucena
+# Data: 2026-04-14
+# Descrição: Varre o ambiente e liga VMs conforme filtro informado
+# version 001
+# ==============================================================================
+
+- id: mgc-vm-start-by-filter
+  name: "MGC - VM - Start by Filter"
+  description: |-
+    Liga VMs na Magalu Cloud por tenant com segurança.
+
+    Comportamento:
+    - Suporte a filtro por nome exato, parcial ou todas as VMs
+    - Se nenhum nome for informado, seleciona apenas VMs paradas
+    - Modo DRY_RUN (padrão: true) — simula sem ligar
+    - AUTO_CONFIRM para execução não interativa
+
+    Requisitos:
+    - mgc CLI no PATH
+    - jq instalado
+  loglevel: INFO
+  executionEnabled: true
+  nodeFilterEditable: false
+  defaultTab: nodes
+
+  options:
+    - name: APIKEY
+      label: "MGC API Key"
+      description: "API Key para autenticação no MGC. Referencia o Key Storage do Rundeck."
+      required: true
+      secure: true
+      valueExposed: true
+      storagePath: "keys/mgc/apikey"
+
+    - name: FILTER_MODE
+      label: "Modo de Filtro"
+      description: "Como selecionar as VMs: todas, nome exato ou parcial."
+      required: true
+      value: "all"
+      values:
+        - all
+        - exact
+        - partial
+
+    - name: VM_NAMES
+      label: "Nomes das VMs"
+      description: "Nomes das VMs separados por vírgula (usado em exact/partial). Se vazio, pega todas as VMs paradas."
+      required: false
+
+    - name: DRY_RUN
+      label: "Dry Run"
+      description: "Se true, apenas simula a inicialização sem executar."
+      required: true
+      value: "true"
+      values:
+        - "true"
+        - "false"
+
+    - name: AUTO_CONFIRM
+      label: "Auto Confirm"
+      description: "Se true, pula confirmação manual antes de ligar."
+      required: true
+      value: "false"
+      values:
+        - "true"
+        - "false"
+
+  sequence:
+    strategy: node-first
+    keepgoing: false
+    commands:
+      - script: |-
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export MGC_AUTH_TYPE=api-key
+
+          APIKEY="${RD_OPTION_APIKEY}"
+          FILTER_MODE="${RD_OPTION_FILTER_MODE}"
+          VM_NAMES="${RD_OPTION_VM_NAMES:-}"
+          DRY_RUN="${RD_OPTION_DRY_RUN:-true}"
+          AUTO_CONFIRM="${RD_OPTION_AUTO_CONFIRM:-false}"
+
+          MATCH_LIMIT=20
+
+          log()  { echo "[$(date '+%F %T')] $*"; }
+          fail() { log "ERROR: $*"; exit 1; }
+
+          check_dependencies() {
+            for cmd in mgc jq; do
+              command -v "$cmd" >/dev/null || fail "Dependência não encontrada: $cmd"
+            done
+          }
+
+          validate_inputs() {
+            [[ -z "${APIKEY:-}" ]] && fail "APIKEY não informada"
+            [[ -z "${FILTER_MODE:-}" ]] && fail "FILTER_MODE não informado"
+            case "$FILTER_MODE" in
+              all|exact|partial) ;;
+              *) fail "FILTER_MODE inválido: $FILTER_MODE" ;;
+            esac
+
+            if [[ "$FILTER_MODE" != "all" && -z "${VM_NAMES// }" ]]; then
+              fail "VM_NAMES deve ser informado quando FILTER_MODE for exact ou partial"
+            fi
+
+            if [[ "$FILTER_MODE" == "all" && -n "${VM_NAMES// }" ]]; then
+              log "VM_NAMES informado com FILTER_MODE=all; aplicando filtro parcial automaticamente"
+              FILTER_MODE="partial"
+            fi
+          }
+
+          list_instances() {
+            log "Listando VMs..."
+            INSTANCES_RAW=$(mgc virtual-machine instances list --api-key "$APIKEY" --output json --raw \
+              | sed -r "s/\x1B\[[0-9;]*[mK]//g") || fail "Erro ao listar instâncias"
+            INSTANCES=$(echo "$INSTANCES_RAW" | jq 'if type == "object" and has("instances") then .instances else . end')
+            TOTAL=$(echo "$INSTANCES" | jq 'length')
+            log "Total de VMs: $TOTAL"
+          }
+
+          filter_instances() {
+            case "$FILTER_MODE" in
+              all)
+                if [[ -z "${VM_NAMES// }" ]]; then
+                  FILTERED=$(echo "$INSTANCES" | jq '
+                    map(select(((.status // "") | ascii_downcase) as $s | ($s == "stopped" or $s == "shutoff" or $s == "suspended")))
+                  ')
+                else
+                  FILTERED="$INSTANCES"
+                fi
+                ;;
+              exact)
+                FILTERED=$(echo "$INSTANCES" | jq --arg names "$VM_NAMES" '
+                  ($names | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | map(ascii_downcase)) as $list |
+                  map(select((.name // "") | ascii_downcase as $n | $list | index($n)))
+                ')
+                ;;
+              partial)
+                FILTERED=$(echo "$INSTANCES" | jq --arg pattern "$VM_NAMES" '
+                  ($pattern | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $p |
+                  map(select(((.name // "") | ascii_downcase) as $n | ($n | contains($p) or endswith($p))))
+                ')
+                ;;
+            esac
+
+            COUNT=$(echo "$FILTERED" | jq 'length')
+            [[ "$COUNT" -eq 0 ]] && fail "Nenhuma VM encontrada com o filtro informado"
+            [[ "$COUNT" -gt "$MATCH_LIMIT" ]] && fail "MATCH_LIMIT excedido ($COUNT > $MATCH_LIMIT)"
+            log "VMs selecionadas: $COUNT"
+            echo "$FILTERED" | jq -r '.[] | "- \(.name) | uuid=\(.id) | status=\(.status // "unknown")"'
+          }
+
+          start_instances() {
+            local success=0 skipped=0 failed=0 simulated=0
+
+            while read -r vm; do
+              ID=$(echo "$vm" | jq -r '.id')
+              NAME=$(echo "$vm" | jq -r '.name')
+              STATUS=$(echo "$vm" | jq -r '(.status // "unknown") | ascii_downcase')
+
+              if [[ "$STATUS" != "stopped" && "$STATUS" != "shutoff" && "$STATUS" != "suspended" ]]; then
+                log "Ignorada (não está parada): $NAME | uuid=$ID | status=$STATUS"
+                skipped=$((skipped + 1))
+                continue
+              fi
+
+              if [[ "$DRY_RUN" == "true" ]]; then
+                log "[DRY-RUN] Ligaria: $NAME | uuid=$ID | status=$STATUS"
+                simulated=$((simulated + 1))
+                continue
+              fi
+
+              log "Ligando: $NAME | uuid=$ID | status=$STATUS"
+              if mgc virtual-machine instances start --id="$ID" --api-key="$APIKEY" --no-confirm >/dev/null 2>&1; then
+                log "OK: $NAME ligada | uuid=$ID"
+                success=$((success + 1))
+              else
+                log "FALHA: não foi possível ligar $NAME | uuid=$ID"
+                failed=$((failed + 1))
+              fi
+            done < <(echo "$FILTERED" | jq -c '.[]')
+
+            echo
+            echo "==================== RESUMO ===================="
+            echo "Sucesso : $success"
+            echo "Simuladas: $simulated"
+            echo "Ignoradas: $skipped"
+            echo "Falhas  : $failed"
+            echo "================================================"
+          }
+
+          main() {
+            check_dependencies
+            validate_inputs
+            list_instances
+            filter_instances
+
+            if [[ "${AUTO_CONFIRM}" != "true" && "$DRY_RUN" != "true" ]]; then
+              read -rp "Confirma inicialização? (yes/no): " confirm
+              [[ "$confirm" != "yes" ]] && exit 0
+            fi
+
+            start_instances
+          }
+
+          main "$@"
