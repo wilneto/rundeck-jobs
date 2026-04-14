@@ -1,25 +1,39 @@
 # ==============================================================================
-# Script: shutdwon-instances
-# Autor: Wilson Lucena 
-# Data: 2026-04-14 (rev 6)
-# Descrição: Tem por objetivo varrer o ambiente e desligar recursos em horários prédefinidos 
-
+# Script: shutdown-instances
+# Autor: Wilson Lucena
+# Data: 2026-04-14
+# Descrição: Varre o ambiente e desliga VMs em horários pré-definidos
 # ==============================================================================
 
-- defaultTab: nodes
-  description: "Desliga VMs na Magalu Cloud por tenant com segurança"
-  executionEnabled: true
-  id: mgc-vm-stop-by-filter
-  loglevel: INFO
+- id: mgc-vm-stop-by-filter
   name: "MGC - VM - Stop by Filter"
+  description: |-
+    Desliga VMs na Magalu Cloud por tenant com segurança.
+
+    Comportamento:
+    - Suporte a filtro por nome exato, parcial ou todas as VMs
+    - Modo DRY_RUN (padrão: true) — simula sem desligar
+    - AUTO_CONFIRM para execução não interativa
+
+    Requisitos:
+    - mgc CLI no PATH
+    - jq instalado
+  loglevel: INFO
+  executionEnabled: true
   nodeFilterEditable: false
+  defaultTab: nodes
 
   options:
     - name: APIKEY
+      label: "MGC API Key"
+      description: "API Key para autenticação no MGC (obrigatório)."
       required: true
       secure: true
+      valueExposed: true
 
     - name: FILTER_MODE
+      label: "Modo de Filtro"
+      description: "Como selecionar as VMs: todas, nome exato ou parcial."
       required: true
       values:
         - all
@@ -27,105 +41,79 @@
         - partial
 
     - name: VM_NAMES
+      label: "Nomes das VMs"
+      description: "Nomes das VMs separados por vírgula (usado em exact/partial)."
       required: false
 
     - name: DRY_RUN
+      label: "Dry Run"
+      description: "Se true, apenas simula o desligamento sem executar."
       required: true
-      defaultValue: "true"
+      value: "true"
       values:
         - "true"
         - "false"
 
     - name: AUTO_CONFIRM
+      label: "Auto Confirm"
+      description: "Se true, pula confirmação manual antes de desligar."
       required: true
-      defaultValue: "false"
+      value: "false"
       values:
         - "true"
         - "false"
 
   sequence:
-    keepgoing: false
     strategy: node-first
+    keepgoing: false
     commands:
-      - script: |
-          export APIKEY="@option.APIKEY@"
-          export FILTER_MODE="@option.FILTER_MODE@"
-          export VM_NAMES="@option.VM_NAMES@"
-          export DRY_RUN="@option.DRY_RUN@"
-          export AUTO_CONFIRM="@option.AUTO_CONFIRM@"
-
-          /bin/bash << 'EOF'
+      - script: |-
           #!/usr/bin/env bash
           set -euo pipefail
 
-          #######################################
-          # CONFIG
-          #######################################
+          APIKEY="${RD_OPTION_APIKEY}"
+          FILTER_MODE="${RD_OPTION_FILTER_MODE}"
+          VM_NAMES="${RD_OPTION_VM_NAMES:-}"
+          DRY_RUN="${RD_OPTION_DRY_RUN:-true}"
+          AUTO_CONFIRM="${RD_OPTION_AUTO_CONFIRM:-false}"
+
           MATCH_LIMIT=20
 
-          #######################################
-          # LOGGING
-          #######################################
-          log() {
-            echo "[$(date '+%F %T')] $*"
-          }
+          log()  { echo "[$(date '+%F %T')] $*"; }
+          fail() { log "ERROR: $*"; exit 1; }
 
-          fail() {
-            log "ERROR: $*"
-            exit 1
-          }
-
-          #######################################
-          # DEPENDENCIES
-          #######################################
           check_dependencies() {
-            for cmd in mgc jq sed; do
+            for cmd in mgc jq; do
               command -v "$cmd" >/dev/null || fail "Dependência não encontrada: $cmd"
             done
           }
 
-          #######################################
-          # INPUT VALIDATION
-          #######################################
           validate_inputs() {
             [[ -z "${APIKEY:-}" ]] && fail "APIKEY não informada"
             [[ -z "${FILTER_MODE:-}" ]] && fail "FILTER_MODE não informado"
-
             case "$FILTER_MODE" in
               all|exact|partial) ;;
               *) fail "FILTER_MODE inválido: $FILTER_MODE" ;;
             esac
           }
 
-          #######################################
-          # AUTH
-          #######################################
           authenticate() {
             log "Autenticando no tenant..."
-            TENANT_JSON=$(mgc auth tenant current --api-key "$APIKEY" --output json --raw | sed -r "s/\x1B\[[0-9;]*[mK]//g") \
-              || fail "Falha ao autenticar"
-
+            TENANT_JSON=$(mgc auth tenant current --api-key "$APIKEY" --output json --raw \
+              | sed -r "s/\x1B\[[0-9;]*[mK]//g") || fail "Falha ao autenticar"
             TENANT_ID=$(echo "$TENANT_JSON" | jq -r '.id')
             TENANT_NAME=$(echo "$TENANT_JSON" | jq -r '.name')
-
             log "Tenant: $TENANT_NAME ($TENANT_ID)"
           }
 
-          #######################################
-          # LIST INSTANCES
-          #######################################
           list_instances() {
             log "Listando VMs..."
-            INSTANCES=$(mgc virtual-machine instances list --output json --raw | sed -r "s/\x1B\[[0-9;]*[mK]//g") \
-              || fail "Erro ao listar instâncias"
-
+            INSTANCES=$(mgc virtual-machine instances list --output json --raw \
+              | sed -r "s/\x1B\[[0-9;]*[mK]//g") || fail "Erro ao listar instâncias"
             TOTAL=$(echo "$INSTANCES" | jq '. | length')
             log "Total de VMs: $TOTAL"
           }
 
-          #######################################
-          # FILTER
-          #######################################
           filter_instances() {
             case "$FILTER_MODE" in
               all)
@@ -145,30 +133,22 @@
             esac
 
             COUNT=$(echo "$FILTERED" | jq '. | length')
-
-            [[ "$COUNT" -eq 0 ]] && exit 3
-
+            [[ "$COUNT" -eq 0 ]] && fail "Nenhuma VM encontrada com o filtro informado"
             [[ "$COUNT" -gt "$MATCH_LIMIT" ]] && fail "MATCH_LIMIT excedido ($COUNT > $MATCH_LIMIT)"
-
             log "VMs selecionadas: $COUNT"
           }
 
-          #######################################
-          # STOP
-          #######################################
           stop_instances() {
-            SUCCESS=0
-            SKIPPED=0
-            FAILED=0
+            local success=0 skipped=0 failed=0
 
-            echo "$FILTERED" | jq -c '.[]' | while read -r vm; do
+            while read -r vm; do
               ID=$(echo "$vm" | jq -r '.id')
               NAME=$(echo "$vm" | jq -r '.name')
               STATUS=$(echo "$vm" | jq -r '.status')
 
               if [[ "$STATUS" != "running" ]]; then
                 log "Ignorada (não está running): $NAME"
-                ((SKIPPED++))
+                skipped=$((skipped + 1))
                 continue
               fi
 
@@ -179,21 +159,20 @@
 
               log "Desligando: $NAME"
               if mgc virtual-machine instances stop "$ID" --no-confirm >/dev/null 2>&1; then
-                ((SUCCESS++))
+                success=$((success + 1))
               else
-                ((FAILED++))
+                failed=$((failed + 1))
               fi
-            done
+            done < <(echo "$FILTERED" | jq -c '.[]')
 
-            log "Resumo:"
-            log "Sucesso: $SUCCESS"
-            log "Ignoradas: $SKIPPED"
-            log "Falhas: $FAILED"
+            echo
+            echo "==================== RESUMO ===================="
+            echo "Sucesso : $success"
+            echo "Ignoradas: $skipped"
+            echo "Falhas  : $failed"
+            echo "================================================"
           }
 
-          #######################################
-          # MAIN
-          #######################################
           main() {
             check_dependencies
             validate_inputs
@@ -201,7 +180,7 @@
             list_instances
             filter_instances
 
-            if [[ "${AUTO_CONFIRM:-false}" != "true" && "$DRY_RUN" != "true" ]]; then
+            if [[ "${AUTO_CONFIRM}" != "true" && "$DRY_RUN" != "true" ]]; then
               read -rp "Confirma desligamento? (yes/no): " confirm
               [[ "$confirm" != "yes" ]] && exit 0
             fi
@@ -210,7 +189,6 @@
           }
 
           main "$@"
-          EOF
 
   schedule:
     time:
