@@ -20,64 +20,65 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed job files
-        id: changed
+      - name: Install Java and Rundeck CLI
         run: |
-          BASE_SHA="${{ github.event.before }}"
+          sudo apt-get update
+          sudo apt-get install -y unzip default-jre
+          sudo bash -c 'os=any dist=any bash <(curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh)'
+          sudo apt-get install -y rundeck-cli
+          rd version
 
+      - name: Set Rundeck credentials
+        run: |
+          echo "RD_URL=${{ secrets.RUNDECK_URL }}" >> $GITHUB_ENV
+          echo "RD_TOKEN=${{ secrets.RUNDECK_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Detect changed job files and sync
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="${{ github.event.before }}"
           if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             BASE_SHA=$(git rev-parse HEAD~1)
           fi
 
-          CHANGED=$(git diff --name-only "$BASE_SHA" HEAD -- '*/jobs/*.yml' '*/jobs/*.yaml' | tr '\n' ' ')
-          echo "files=${CHANGED}" >> "$GITHUB_OUTPUT"
-          echo "Changed files: ${CHANGED:-none}"
+          echo "Diff range: ${BASE_SHA}..${{ github.sha }}"
+          git fetch origin "$BASE_SHA" 2>/dev/null || true
 
-      - name: Sync jobs to Rundeck
-        if: steps.changed.outputs.files != ''
-        env:
-          RUNDECK_URL: ${{ secrets.RUNDECK_URL }}
-          RUNDECK_TOKEN: ${{ secrets.RUNDECK_TOKEN }}
-        run: |
-          FAILED=0
+          CHANGED=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}" -- '*/jobs/*.yml' '*/jobs/*.yaml')
 
-          for file in ${{ steps.changed.outputs.files }}; do
+          if [ -z "$CHANGED" ]; then
+            echo "Nenhum arquivo de job alterado."
+            exit 0
+          fi
+
+          echo "Arquivos alterados:"
+          echo "$CHANGED" | sed 's/^/ - /'
+
+          SYNCED=0
+          SKIPPED=0
+
+          while IFS= read -r file; do
             [ -z "$file" ] && continue
-
             PROJECT=$(echo "$file" | cut -d'/' -f1)
-            echo "Processing: $file → project: $PROJECT"
+            echo ""
+            echo "==> Update: project=$PROJECT file=$file"
 
-            # Check if project exists
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "X-Rundeck-Auth-Token: $RUNDECK_TOKEN" \
-              "${RUNDECK_URL}/api/41/project/${PROJECT}")
-
-            if [ "$HTTP_STATUS" != "200" ]; then
-              echo "WARNING: Project '$PROJECT' not found (HTTP $HTTP_STATUS). Skipping."
-              echo "Create the project and push again."
-              continue
-            fi
-
-            echo "Importing: $file"
-            HTTP_CODE=$(curl -s -o /tmp/rundeck_response.json -w "%{http_code}" -X POST \
-              -H "X-Rundeck-Auth-Token: $RUNDECK_TOKEN" \
-              -H "Content-Type: application/yaml" \
-              --data-binary "@${file}" \
-              "${RUNDECK_URL}/api/41/project/${PROJECT}/jobs/import?format=yaml&dupeOption=update")
-
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Done: $file"
+            if rd projects info --project "$PROJECT" > /dev/null 2>&1; then
+              rd jobs load \
+                --project "$PROJECT" \
+                --file "$file" \
+                --format yaml \
+                --duplicate update
+              SYNCED=$((SYNCED + 1))
             else
-              echo "ERROR: $file returned HTTP $HTTP_CODE"
-              cat /tmp/rundeck_response.json || true
-              FAILED=$((FAILED + 1))
+              echo "WARN: Projeto '$PROJECT' não existe no Rundeck. Pulando."
+              echo "Crie o projeto e faça push novamente."
+              SKIPPED=$((SKIPPED + 1))
             fi
-          done
+          done <<< "$CHANGED"
 
           echo ""
-          echo "=== Summary: $FAILED failure(s) ==="
-          exit "$FAILED"
-
-      - name: No jobs changed
-        if: steps.changed.outputs.files == ''
-        run: echo "No job files changed. Nothing to sync."
+          echo "===== Resumo ====="
+          echo "Synced:  $SYNCED"
+          echo "Skipped: $SKIPPED"
