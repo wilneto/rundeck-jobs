@@ -22,10 +22,13 @@ jobs:
 
       - name: Install Rundeck CLI (rd)
         run: |
-          RD_VERSION=$(curl -s https://api.github.com/repos/rundeck/rundeck-cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
-          curl -fsSL "https://github.com/rundeck/rundeck-cli/releases/latest/download/rd-${RD_VERSION}-all.jar" -o /usr/local/bin/rd.jar
-          echo '#!/bin/sh' | sudo tee /usr/local/bin/rd > /dev/null
-          echo 'exec java -jar /usr/local/bin/rd.jar "$@"' | sudo tee -a /usr/local/bin/rd > /dev/null
+          RD_VERSION=$(curl -s "https://repo1.maven.org/maven2/org/rundeck/rundeck-cli/maven-metadata.xml" \
+            | grep '<release>' | sed 's/.*<release>\(.*\)<\/release>.*/\1/')
+          echo "Installing rd version: ${RD_VERSION}"
+          curl -fsSL "https://repo1.maven.org/maven2/org/rundeck/rundeck-cli/${RD_VERSION}/rundeck-cli-${RD_VERSION}-all.jar" \
+            -o /tmp/rd.jar
+          sudo mv /tmp/rd.jar /usr/local/lib/rd.jar
+          printf '#!/bin/sh\nexec java -jar /usr/local/lib/rd.jar "$@"\n' | sudo tee /usr/local/bin/rd > /dev/null
           sudo chmod +x /usr/local/bin/rd
           rd version
 
