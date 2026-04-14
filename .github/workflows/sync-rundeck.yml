@@ -20,24 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rundeck CLI (rd)
-        run: |
-          RD_VERSION=$(curl -s "https://repo1.maven.org/maven2/org/rundeck/rundeck-cli/maven-metadata.xml" \
-            | grep '<release>' | sed 's/.*<release>\(.*\)<\/release>.*/\1/')
-          echo "Installing rd version: ${RD_VERSION}"
-          curl -fsSL "https://repo1.maven.org/maven2/org/rundeck/rundeck-cli/${RD_VERSION}/rundeck-cli-${RD_VERSION}-all.jar" \
-            -o /tmp/rd.jar
-          sudo mv /tmp/rd.jar /usr/local/lib/rd.jar
-          printf '#!/bin/sh\nexec java -jar /usr/local/lib/rd.jar "$@"\n' | sudo tee /usr/local/bin/rd > /dev/null
-          sudo chmod +x /usr/local/bin/rd
-          rd version
-
       - name: Detect changed job files
         id: changed
         run: |
           BASE_SHA="${{ github.event.before }}"
 
-          # workflow_dispatch: compare HEAD~1 as fallback
           if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             BASE_SHA=$(git rev-parse HEAD~1)
           fi
@@ -49,22 +36,54 @@ jobs:
       - name: Sync jobs to Rundeck
         if: steps.changed.outputs.files != ''
         env:
-          RD_URL: ${{ secrets.RUNDECK_URL }}
-          RD_TOKEN: ${{ secrets.RUNDECK_TOKEN }}
+          RUNDECK_URL: ${{ secrets.RUNDECK_URL }}
+          RUNDECK_TOKEN: ${{ secrets.RUNDECK_TOKEN }}
         run: |
+          SUCCESS=0
+          SKIPPED=0
+          FAILED=0
+
           for file in ${{ steps.changed.outputs.files }}; do
             PROJECT=$(echo "$file" | cut -d'/' -f1)
             echo "Processing: $file → project: $PROJECT"
 
-            if rd projects info --project "$PROJECT" > /dev/null 2>&1; then
+            # Check if project exists
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "X-Rundeck-Auth-Token: $RUNDECK_TOKEN" \
+              "$RUNDECK_URL/api/41/project/$PROJECT")
+
+            if [ "$HTTP_STATUS" = "200" ]; then
               echo "Importing job: $file"
-              rd jobs load --project "$PROJECT" --file "$file" --format yaml --duplicate update
-              echo "Done: $file"
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                -H "X-Rundeck-Auth-Token: $RUNDECK_TOKEN" \
+                -H "Content-Type: application/yaml" \
+                --data-binary "@$file" \
+                "$RUNDECK_URL/api/41/project/$PROJECT/jobs/import?format=yaml&dupeOption=update")
+
+              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+              BODY=$(echo "$RESPONSE" | head -n -1)
+
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "Done: $file"
+                ((SUCCESS++))
+              else
+                echo "ERROR importing $file (HTTP $HTTP_CODE): $BODY"
+                ((FAILED++))
+              fi
             else
-              echo "WARNING: Project '$PROJECT' does not exist in Rundeck. Skipping."
+              echo "WARNING: Project '$PROJECT' not found in Rundeck (HTTP $HTTP_STATUS). Skipping."
               echo "Create the project and push again."
+              ((SKIPPED++))
             fi
           done
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Success : $SUCCESS"
+          echo "Skipped : $SKIPPED"
+          echo "Failed  : $FAILED"
+
+          [ "$FAILED" -gt 0 ] && exit 1 || exit 0
 
       - name: No jobs changed
         if: steps.changed.outputs.files == ''
