@@ -18,19 +18,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Install Rundeck CLI (rd)
         run: |
-          curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh | sudo bash
-          sudo apt-get install -y rundeck-cli
+          RD_VERSION=$(curl -s https://api.github.com/repos/rundeck/rundeck-cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
+          curl -fsSL "https://github.com/rundeck/rundeck-cli/releases/latest/download/rd-${RD_VERSION}-all.jar" -o /usr/local/bin/rd.jar
+          echo '#!/bin/sh' | sudo tee /usr/local/bin/rd > /dev/null
+          echo 'exec java -jar /usr/local/bin/rd.jar "$@"' | sudo tee -a /usr/local/bin/rd > /dev/null
+          sudo chmod +x /usr/local/bin/rd
+          rd version
 
       - name: Detect changed job files
         id: changed
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD -- '*/jobs/*.yml' '*/jobs/*.yaml' | tr '\n' ' ')
+          BASE_SHA="${{ github.event.before }}"
+
+          # workflow_dispatch: compare HEAD~1 as fallback
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA=$(git rev-parse HEAD~1)
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE_SHA" HEAD -- '*/jobs/*.yml' '*/jobs/*.yaml' | tr '\n' ' ')
           echo "files=${CHANGED}" >> "$GITHUB_OUTPUT"
-          echo "Changed files: ${CHANGED}"
+          echo "Changed files: ${CHANGED:-none}"
 
       - name: Sync jobs to Rundeck
         if: steps.changed.outputs.files != ''
@@ -42,14 +53,13 @@ jobs:
             PROJECT=$(echo "$file" | cut -d'/' -f1)
             echo "Processing: $file → project: $PROJECT"
 
-            # Check if project exists in Rundeck
             if rd projects info --project "$PROJECT" > /dev/null 2>&1; then
               echo "Importing job: $file"
               rd jobs load --project "$PROJECT" --file "$file" --format yaml --duplicate update
-              echo "  Done: $file"
+              echo "Done: $file"
             else
-              echo "  WARNING: Project '$PROJECT' does not exist in Rundeck. Skipping."
-              echo "  Create the project and push again."
+              echo "WARNING: Project '$PROJECT' does not exist in Rundeck. Skipping."
+              echo "Create the project and push again."
             fi
           done
 
