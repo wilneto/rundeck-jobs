@@ -27,15 +27,17 @@
   options:
     - name: APIKEY
       label: "MGC API Key"
-      description: "API Key para autenticação no MGC (obrigatório)."
+      description: "API Key para autenticação no MGC. Referencia o Key Storage do Rundeck."
       required: true
       secure: true
       valueExposed: true
+      storagePathDefault: "keys/mgc/apikey"
 
     - name: FILTER_MODE
       label: "Modo de Filtro"
       description: "Como selecionar as VMs: todas, nome exato ou parcial."
       required: true
+      value: "all"
       values:
         - all
         - exact
