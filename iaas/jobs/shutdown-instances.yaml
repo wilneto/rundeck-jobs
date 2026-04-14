@@ -31,7 +31,7 @@
       required: true
       secure: true
       valueExposed: true
-      storagePathDefault: "keys/mgc/apikey"
+      storagePath: "keys/mgc/apikey"
 
     - name: FILTER_MODE
       label: "Modo de Filtro"
