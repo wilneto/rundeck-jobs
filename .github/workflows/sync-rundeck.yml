@@ -1,0 +1,58 @@
+name: Sync Rundeck Jobs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "*/jobs/*.yml"
+      - "*/jobs/*.yaml"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync changed jobs to Rundeck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install Rundeck CLI (rd)
+        run: |
+          curl -s https://packagecloud.io/install/repositories/pagerduty/rundeck/script.deb.sh | sudo bash
+          sudo apt-get install -y rundeck-cli
+
+      - name: Detect changed job files
+        id: changed
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- '*/jobs/*.yml' '*/jobs/*.yaml' | tr '\n' ' ')
+          echo "files=${CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "Changed files: ${CHANGED}"
+
+      - name: Sync jobs to Rundeck
+        if: steps.changed.outputs.files != ''
+        env:
+          RD_URL: ${{ secrets.RUNDECK_URL }}
+          RD_TOKEN: ${{ secrets.RUNDECK_TOKEN }}
+        run: |
+          for file in ${{ steps.changed.outputs.files }}; do
+            PROJECT=$(echo "$file" | cut -d'/' -f1)
+            echo "Processing: $file → project: $PROJECT"
+
+            # Check if project exists in Rundeck
+            if rd projects info --project "$PROJECT" > /dev/null 2>&1; then
+              echo "Importing job: $file"
+              rd jobs load --project "$PROJECT" --file "$file" --format yaml --duplicate update
+              echo "  Done: $file"
+            else
+              echo "  WARNING: Project '$PROJECT' does not exist in Rundeck. Skipping."
+              echo "  Create the project and push again."
+            fi
+          done
+
+      - name: No jobs changed
+        if: steps.changed.outputs.files == ''
+        run: echo "No job files changed. Nothing to sync."
