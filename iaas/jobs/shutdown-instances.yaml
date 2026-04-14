@@ -1,0 +1,221 @@
+# ==============================================================================
+# Script: shutdwon-instances
+# Autor: Wilson Lucena 
+# Data: 2026-02-04
+# Descrição: Tem por objetivo varrer o ambiente e desligar recursos em horários prédefinidos 
+
+# ==============================================================================
+
+- defaultTab: nodes
+  description: "Desliga VMs na Magalu Cloud por tenant com segurança"
+  executionEnabled: true
+  id: mgc-vm-stop-by-filter
+  loglevel: INFO
+  name: "MGC - VM - Stop by Filter"
+  nodeFilterEditable: false
+
+  options:
+    - name: APIKEY
+      required: true
+      secure: true
+
+    - name: FILTER_MODE
+      required: true
+      values:
+        - all
+        - exact
+        - partial
+
+    - name: VM_NAMES
+      required: false
+
+    - name: DRY_RUN
+      required: true
+      defaultValue: "true"
+      values:
+        - "true"
+        - "false"
+
+    - name: AUTO_CONFIRM
+      required: true
+      defaultValue: "false"
+      values:
+        - "true"
+        - "false"
+
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - script: |
+          export APIKEY="@option.APIKEY@"
+          export FILTER_MODE="@option.FILTER_MODE@"
+          export VM_NAMES="@option.VM_NAMES@"
+          export DRY_RUN="@option.DRY_RUN@"
+          export AUTO_CONFIRM="@option.AUTO_CONFIRM@"
+
+          /bin/bash << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          #######################################
+          # CONFIG
+          #######################################
+          MATCH_LIMIT=20
+
+          #######################################
+          # LOGGING
+          #######################################
+          log() {
+            echo "[$(date '+%F %T')] $*"
+          }
+
+          fail() {
+            log "ERROR: $*"
+            exit 1
+          }
+
+          #######################################
+          # DEPENDENCIES
+          #######################################
+          check_dependencies() {
+            for cmd in mgc jq sed; do
+              command -v "$cmd" >/dev/null || fail "Dependência não encontrada: $cmd"
+            done
+          }
+
+          #######################################
+          # INPUT VALIDATION
+          #######################################
+          validate_inputs() {
+            [[ -z "${APIKEY:-}" ]] && fail "APIKEY não informada"
+            [[ -z "${FILTER_MODE:-}" ]] && fail "FILTER_MODE não informado"
+
+            case "$FILTER_MODE" in
+              all|exact|partial) ;;
+              *) fail "FILTER_MODE inválido: $FILTER_MODE" ;;
+            esac
+          }
+
+          #######################################
+          # AUTH
+          #######################################
+          authenticate() {
+            log "Autenticando no tenant..."
+            TENANT_JSON=$(mgc auth tenant current --api-key "$APIKEY" --output json --raw | sed -r "s/\x1B\[[0-9;]*[mK]//g") \
+              || fail "Falha ao autenticar"
+
+            TENANT_ID=$(echo "$TENANT_JSON" | jq -r '.id')
+            TENANT_NAME=$(echo "$TENANT_JSON" | jq -r '.name')
+
+            log "Tenant: $TENANT_NAME ($TENANT_ID)"
+          }
+
+          #######################################
+          # LIST INSTANCES
+          #######################################
+          list_instances() {
+            log "Listando VMs..."
+            INSTANCES=$(mgc virtual-machine instances list --output json --raw | sed -r "s/\x1B\[[0-9;]*[mK]//g") \
+              || fail "Erro ao listar instâncias"
+
+            TOTAL=$(echo "$INSTANCES" | jq '. | length')
+            log "Total de VMs: $TOTAL"
+          }
+
+          #######################################
+          # FILTER
+          #######################################
+          filter_instances() {
+            case "$FILTER_MODE" in
+              all)
+                FILTERED="$INSTANCES"
+                ;;
+              exact)
+                FILTERED=$(echo "$INSTANCES" | jq --arg names "$VM_NAMES" '
+                  ($names | split(",") | map(ascii_downcase)) as $list |
+                  map(select(.name | ascii_downcase as $n | $list | index($n)))
+                ')
+                ;;
+              partial)
+                FILTERED=$(echo "$INSTANCES" | jq --arg pattern "$VM_NAMES" '
+                  map(select(.name | ascii_downcase | contains($pattern | ascii_downcase)))
+                ')
+                ;;
+            esac
+
+            COUNT=$(echo "$FILTERED" | jq '. | length')
+
+            [[ "$COUNT" -eq 0 ]] && exit 3
+
+            [[ "$COUNT" -gt "$MATCH_LIMIT" ]] && fail "MATCH_LIMIT excedido ($COUNT > $MATCH_LIMIT)"
+
+            log "VMs selecionadas: $COUNT"
+          }
+
+          #######################################
+          # STOP
+          #######################################
+          stop_instances() {
+            SUCCESS=0
+            SKIPPED=0
+            FAILED=0
+
+            echo "$FILTERED" | jq -c '.[]' | while read -r vm; do
+              ID=$(echo "$vm" | jq -r '.id')
+              NAME=$(echo "$vm" | jq -r '.name')
+              STATUS=$(echo "$vm" | jq -r '.status')
+
+              if [[ "$STATUS" != "running" ]]; then
+                log "Ignorada (não está running): $NAME"
+                ((SKIPPED++))
+                continue
+              fi
+
+              if [[ "$DRY_RUN" == "true" ]]; then
+                log "[DRY-RUN] Desligaria: $NAME"
+                continue
+              fi
+
+              log "Desligando: $NAME"
+              if mgc virtual-machine instances stop "$ID" --no-confirm >/dev/null 2>&1; then
+                ((SUCCESS++))
+              else
+                ((FAILED++))
+              fi
+            done
+
+            log "Resumo:"
+            log "Sucesso: $SUCCESS"
+            log "Ignoradas: $SKIPPED"
+            log "Falhas: $FAILED"
+          }
+
+          #######################################
+          # MAIN
+          #######################################
+          main() {
+            check_dependencies
+            validate_inputs
+            authenticate
+            list_instances
+            filter_instances
+
+            if [[ "${AUTO_CONFIRM:-false}" != "true" && "$DRY_RUN" != "true" ]]; then
+              read -rp "Confirma desligamento? (yes/no): " confirm
+              [[ "$confirm" != "yes" ]] && exit 0
+            fi
+
+            stop_instances
+          }
+
+          main "$@"
+          EOF
+
+  schedule:
+    time:
+      hour: '22'
+      minute: '00'
+      seconds: '0'
+    weekday:
+      day: '*'

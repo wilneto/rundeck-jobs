@@ -27,7 +27,7 @@
 
         export MGC_AUTH_TYPE=api-key
         #MGCAPIKEY=$RD_OPTION_MGCAPIKEY
-        MGCAPIKEY=09c23068-ccbe-4c23-bbe8-ad7fc9ff0ea5
+        MGCAPIKEY=<<SUA-API-KEY>>
         LB_NAME="teste-lb-will-cpen5-se"
 
         echo "🔄 Buscando informações do Load Balancer '$LB_NAME'..."
