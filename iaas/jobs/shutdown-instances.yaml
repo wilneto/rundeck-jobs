@@ -111,15 +111,6 @@
             fi
           }
 
-          authenticate() {
-            log "Autenticando no tenant..."
-            TENANT_JSON=$(mgc auth tenant current --api-key "$APIKEY" --output json --raw \
-              | sed -r "s/\x1B\[[0-9;]*[mK]//g") || fail "Falha ao autenticar"
-            TENANT_ID=$(echo "$TENANT_JSON" | jq -r '.id')
-            TENANT_NAME=$(echo "$TENANT_JSON" | jq -r '.name')
-            log "Tenant: $TENANT_NAME ($TENANT_ID)"
-          }
-
           list_instances() {
             log "Listando VMs..."
             INSTANCES_RAW=$(mgc virtual-machine instances list --api-key "$APIKEY" --output json --raw \
@@ -152,7 +143,7 @@
             [[ "$COUNT" -eq 0 ]] && fail "Nenhuma VM encontrada com o filtro informado"
             [[ "$COUNT" -gt "$MATCH_LIMIT" ]] && fail "MATCH_LIMIT excedido ($COUNT > $MATCH_LIMIT)"
             log "VMs selecionadas: $COUNT"
-            echo "$FILTERED" | jq -r '.[] | "- \(.name) [\(.status)]"'
+            echo "$FILTERED" | jq -r '.[] | "- \(.name) | uuid=\(.id) | status=\(.status // "unknown")"'
           }
 
           stop_instances() {
@@ -161,26 +152,26 @@
             while read -r vm; do
               ID=$(echo "$vm" | jq -r '.id')
               NAME=$(echo "$vm" | jq -r '.name')
-              STATUS=$(echo "$vm" | jq -r '.status')
+              STATUS=$(echo "$vm" | jq -r '(.status // "unknown") | ascii_downcase')
 
-              if [[ "$STATUS" != "running" ]]; then
-                log "Ignorada (não está running): $NAME"
+              if [[ "$STATUS" == "stopped" || "$STATUS" == "shutoff" || "$STATUS" == "suspended" ]]; then
+                log "Ignorada (já parada): $NAME | uuid=$ID | status=$STATUS"
                 skipped=$((skipped + 1))
                 continue
               fi
 
               if [[ "$DRY_RUN" == "true" ]]; then
-                log "[DRY-RUN] Desligaria: $NAME"
+                log "[DRY-RUN] Desligaria: $NAME | uuid=$ID | status=$STATUS"
                 simulated=$((simulated + 1))
                 continue
               fi
 
-              log "Desligando: $NAME"
-              if mgc virtual-machine instances stop --id="$ID" --no-confirm --api-key="$APIKEY" >/dev/null 2>&1; then
-                log "OK: $NAME desligada"
+              log "Desligando: $NAME | uuid=$ID | status=$STATUS"
+              if mgc virtual-machine instances stop --id="$ID" --api-key="$APIKEY" --no-confirm >/dev/null 2>&1; then
+                log "OK: $NAME desligada | uuid=$ID"
                 success=$((success + 1))
               else
-                log "FALHA: não foi possível desligar $NAME"
+                log "FALHA: não foi possível desligar $NAME | uuid=$ID"
                 failed=$((failed + 1))
               fi
             done < <(echo "$FILTERED" | jq -c '.[]')
@@ -197,7 +188,6 @@
           main() {
             check_dependencies
             validate_inputs
-            authenticate
             list_instances
             filter_instances
 
