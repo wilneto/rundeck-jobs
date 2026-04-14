@@ -126,7 +126,7 @@
               all)
                 if [[ -z "${VM_NAMES// }" ]]; then
                   FILTERED=$(echo "$INSTANCES" | jq '
-                    map(select(((.status // "") | ascii_downcase) as $s | ($s == "stopped" or $s == "shutoff" or $s == "suspended")))
+                    map(select((((.state // .status // "") | ascii_downcase)) as $s | ($s == "stopped" or $s == "shutoff" or $s == "suspended")))
                   ')
                 else
                   FILTERED="$INSTANCES"
@@ -150,7 +150,7 @@
             [[ "$COUNT" -eq 0 ]] && fail "Nenhuma VM encontrada com o filtro informado"
             [[ "$COUNT" -gt "$MATCH_LIMIT" ]] && fail "MATCH_LIMIT excedido ($COUNT > $MATCH_LIMIT)"
             log "VMs selecionadas: $COUNT"
-            echo "$FILTERED" | jq -r '.[] | "- \(.name) | uuid=\(.id) | status=\(.status // "unknown")"'
+            echo "$FILTERED" | jq -r '.[] | "- \(.name) | uuid=\(.id) | state=\(.state // "unknown") | status=\(.status // "unknown")"'
           }
 
           start_instances() {
@@ -159,21 +159,22 @@
             while read -r vm; do
               ID=$(echo "$vm" | jq -r '.id')
               NAME=$(echo "$vm" | jq -r '.name')
+              STATE=$(echo "$vm" | jq -r '(.state // .status // "unknown") | ascii_downcase')
               STATUS=$(echo "$vm" | jq -r '(.status // "unknown") | ascii_downcase')
 
-              if [[ "$STATUS" != "stopped" && "$STATUS" != "shutoff" && "$STATUS" != "suspended" ]]; then
-                log "Ignorada (não está parada): $NAME | uuid=$ID | status=$STATUS"
+              if [[ "$STATE" != "stopped" && "$STATE" != "shutoff" && "$STATE" != "suspended" ]]; then
+                log "Ignorada (não está parada): $NAME | uuid=$ID | state=$STATE | status=$STATUS"
                 skipped=$((skipped + 1))
                 continue
               fi
 
               if [[ "$DRY_RUN" == "true" ]]; then
-                log "[DRY-RUN] Ligaria: $NAME | uuid=$ID | status=$STATUS"
+                log "[DRY-RUN] Ligaria: $NAME | uuid=$ID | state=$STATE | status=$STATUS"
                 simulated=$((simulated + 1))
                 continue
               fi
 
-              log "Ligando: $NAME | uuid=$ID | status=$STATUS"
+              log "Ligando: $NAME | uuid=$ID | state=$STATE | status=$STATUS"
               if mgc virtual-machine instances start --id="$ID" --api-key="$APIKEY" --no-confirm >/dev/null 2>&1; then
                 log "OK: $NAME ligada | uuid=$ID"
                 success=$((success + 1))
