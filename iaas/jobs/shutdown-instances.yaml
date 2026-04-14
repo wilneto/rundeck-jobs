@@ -104,6 +104,11 @@
             if [[ "$FILTER_MODE" != "all" && -z "${VM_NAMES// }" ]]; then
               fail "VM_NAMES deve ser informado quando FILTER_MODE for exact ou partial"
             fi
+
+            if [[ "$FILTER_MODE" == "all" && -n "${VM_NAMES// }" ]]; then
+              log "VM_NAMES informado com FILTER_MODE=all; aplicando filtro parcial automaticamente"
+              FILTER_MODE="partial"
+            fi
           }
 
           authenticate() {
@@ -132,13 +137,13 @@
               exact)
                 FILTERED=$(echo "$INSTANCES" | jq --arg names "$VM_NAMES" '
                   ($names | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | map(ascii_downcase)) as $list |
-                  map(select(.name | ascii_downcase as $n | $list | index($n)))
+                  map(select((.name // "") | ascii_downcase as $n | $list | index($n)))
                 ')
                 ;;
               partial)
                 FILTERED=$(echo "$INSTANCES" | jq --arg pattern "$VM_NAMES" '
                   ($pattern | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $p |
-                  map(select(.name | ascii_downcase | contains($p)))
+                  map(select(((.name // "") | ascii_downcase) as $n | ($n | contains($p) or endswith($p))))
                 ')
                 ;;
             esac
