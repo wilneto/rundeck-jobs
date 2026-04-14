@@ -1,7 +1,7 @@
 # ==============================================================================
 # Script: shutdwon-instances
 # Autor: Wilson Lucena 
-# Data: 2026-04-14 (rev 4)
+# Data: 2026-04-14 (rev 5)
 # Descrição: Tem por objetivo varrer o ambiente e desligar recursos em horários prédefinidos 
 
 # ==============================================================================
