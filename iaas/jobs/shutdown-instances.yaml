@@ -3,6 +3,7 @@
 # Autor: Wilson Lucena
 # Data: 2026-04-14
 # Descrição: Varre o ambiente e desliga VMs em horários pré-definidos
+# version 001
 # ==============================================================================
 
 - id: mgc-vm-stop-by-filter
