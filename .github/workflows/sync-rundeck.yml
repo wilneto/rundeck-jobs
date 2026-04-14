@@ -65,15 +65,15 @@ jobs:
 
               if [ "$HTTP_CODE" = "200" ]; then
                 echo "Done: $file"
-                ((SUCCESS++))
+                SUCCESS=$((SUCCESS + 1))
               else
                 echo "ERROR importing $file (HTTP $HTTP_CODE): $BODY"
-                ((FAILED++))
+                FAILED=$((FAILED + 1))
               fi
             else
               echo "WARNING: Project '$PROJECT' not found in Rundeck (HTTP $HTTP_STATUS). Skipping."
               echo "Create the project and push again."
-              ((SKIPPED++))
+              SKIPPED=$((SKIPPED + 1))
             fi
           done
 
