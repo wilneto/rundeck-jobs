@@ -1,6 +1,5 @@
 - defaultTab: output
-  description: 'Varre o ambiente procurando por VMs que tenhham APP no nome e adiciona
-    ao load balancer '
+  description: 'Localiza VMs com prefixo app- e atualiza os targets do backend no Load Balancer da MGC.'
   executionEnabled: true
   id: cupdate-lb-targets
   loglevel: INFO
@@ -22,6 +21,13 @@
       passSecureInput: 'false'
       script: |-
         #!/bin/bash
+        # ==============================================================================
+        # Script: adiciona-vm-ao-pool-do-load-balancer
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Coleta NICs de VMs app-* e atualiza os targets do Load Balancer
+        # version 001
+        # ==============================================================================
 
         set -e
 

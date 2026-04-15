@@ -1,13 +1,5 @@
 - defaultTab: nodes
-  description: "Esse script e instala o Prometheus em cada VM do ambiente (além de\
-    \ coletar os IPs como já faz), você pode fazer isso de forma paralela ou sequencial,\
-    \ usando ssh com chave previamente autorizada ou outro mecanismo de acesso (Rundeck\
-    \ plugin, Ansible, etc).\n\nAbaixo está a versão adaptada do seu script, que assume:\n\
-    \t1.\tVocê tem uma chave SSH configurada com acesso root ou sudo às VMs.\n\t2.\t\
-    O nome da chave SSH é passado por uma variável ou está no padrão ~/.ssh/id_rsa.\n\
-    \t3.\tO IP privado será usado para conectar (então deve haver rota, ou VPN/SG\
-    \ permitindo).\n\t4.\tA instalação do Prometheus será feita via apt (Ubuntu),\
-    \ com systemctl para iniciar o serviço."
+  description: "Descobre os IPs privados das VMs, valida a conectividade SSH e instala Prometheus e Node Exporter nas instâncias acessíveis."
   executionEnabled: true
   id: a3b5cfa6-fc27-4006-bc2e-5a2b5fed381c
   loglevel: INFO
@@ -28,6 +20,13 @@
       passSecureInput: 'false'
       script: |+
         #!/bin/bash
+        # ==============================================================================
+        # Script: instala-prometheus
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Coleta IPs das VMs, valida acesso SSH e instala Prometheus e Node Exporter
+        # version 001
+        # ==============================================================================
         set -euo pipefail
 
         API_KEY="${RD_OPTION_API_KEY:-}"
@@ -267,13 +266,19 @@
       description: Install Prometheus + Node Exporter via SSH
       passSecureInput: 'false'
       script: |-
+        #!/bin/bash
+        # ==============================================================================
+        # Script: instala-prometheus
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Executa a instalação idempotente de Prometheus e Node Exporter via SSH
+        # version 001
+        # ==============================================================================
         # Script Etapa 4 - Instalação idempotente do Prometheus + Node Exporter via SSH
         # ==============================================================
         # ✅ Este script roda no Rundeck e se conecta via SSH nas VMs da MGC
         # ✅ Ele detecta IPs privados, evita sobrescrever instalações existentes
         # ==============================================================
-
-        #!/bin/bash
         set -eu
 
         # ==== CONFIGURAÇÕES INICIAIS ====

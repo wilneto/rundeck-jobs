@@ -1,6 +1,5 @@
 - defaultTab: nodes
-  description: Executa testes (cpu|mem|disk|net|all) em UMA VM cujo nome você informar.
-    Marca janela no Prometheus via textfile collector.
+  description: Executa testes de CPU, memória, disco e rede em um nó específico e registra a janela de execução no Prometheus.
   executionEnabled: true
   group: performance
   id: 903d392e-398e-46e1-922d-17cc26e2ee75
@@ -75,6 +74,13 @@
     commands:
     - description: Preparar host e rodar teste
       script: |
+        # ==============================================================================
+        # Script: perf-run-on-node
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Executa testes de performance em um nó e registra métricas auxiliares no Prometheus
+        # version 001
+        # ==============================================================================
         set -euo pipefail
 
         # --- Dependências ---

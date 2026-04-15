@@ -1,6 +1,5 @@
 - defaultTab: output
-  description: 'Varre o ambiente procurando por VMs que tenhham APP no nome e adiciona
-    ao load balancer '
+  description: 'Lista as instâncias do ambiente e recria o arquivo de targets do Prometheus com os IPs privados encontrados.'
   executionEnabled: true
   id: atualiza-nodes-grafana
   loglevel: INFO
@@ -20,7 +19,9 @@
     commands:
     - autoSecureInput: 'false'
       passSecureInput: 'false'
-      script: "#!/bin/bash\nset -euo pipefail\n\nAPI_KEY=\"${RD_OPTION_RD_OPTION_MGCAPIKEY:-}\"\
+      script: "#!/bin/bash\n# ==============================================================================\
+\n# Script: atualiza-nods-do-grafana\n# Autor: Wilson Lucena\n# Data: 2026-04-14\n# Descrição: Atualiza o arquivo de targets do Prometheus com os IPs privados das VMs\n# version 001\n# ==============================================================================\
+\nset -euo pipefail\n\nAPI_KEY=\"${RD_OPTION_RD_OPTION_MGCAPIKEY:-}\"\
         \nTARGET_FILE=\"/etc/prometheus/hosts_app.yml\"\nTMP_FILE=\"/tmp/hosts_app.tmp.yml\"\
         \n\n# Verificação da API Key\nif [[ -z \"$API_KEY\" ]]; then\n  echo \"❌ ERRO:\
         \ variável RD_OPTION_RD_OPTION_MGCAPIKEY não definida.\"\n  exit 1\nfi\n\n\
