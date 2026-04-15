@@ -1,7 +1,5 @@
 - defaultTab: output
-  description: 'O que faz esse Job: Procura por um snapshot que tenha app no nome
-    e o restaura. Coleta o IP privado dessa máquina Adiciona essa MV no pool do Load
-    Balancer - LB Atualiza o Prometheus para que ele consiga enxhergar essa MV'
+  description: 'Restaura uma VM de snapshot app-*, adiciona a instância ao Load Balancer e atualiza o arquivo de targets do Prometheus.'
   executionEnabled: true
   id: add-nodes-in-app-pool
   loglevel: INFO
@@ -21,7 +19,9 @@
     commands:
     - autoSecureInput: 'false'
       passSecureInput: 'false'
-      script: "#!/bin/bash\nset -e\n\n# =========[ CONFIG ]=========\nexport MGC_AUTH_TYPE=api-key\n\
+      script: "#!/bin/bash\n# ==============================================================================\
+\n# Script: create-node-and-add-in-load-balancer-and-monitoring-stack\n# Autor: Wilson Lucena\n# Data: 2026-04-14\n# Descrição: Restaura uma VM de snapshot, atualiza o Load Balancer e o arquivo de targets do Prometheus\n# version 001\n# ==============================================================================\
+\nset -e\n\n# =========[ CONFIG ]=========\nexport MGC_AUTH_TYPE=api-key\n\
         API_KEY=\"$RD_OPTION_MGCAPIKEY\"\nSSH_KEY=\"managed-services\"\nMACHINE_TYPE_ID=\"\
         0122fb85-0fd0-47d1-bf25-f24ca6f11493\"\nLB_NAME=\"teste-lb-will-cpen5-se\"\
         \nTMP_FILE=\"/tmp/hosts_app.tmp.yml\"\nTARGET_FILE=\"/etc/prometheus/hosts_app.yml\"\

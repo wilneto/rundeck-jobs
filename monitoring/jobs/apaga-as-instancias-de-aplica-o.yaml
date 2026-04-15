@@ -1,5 +1,5 @@
 - defaultTab: output
-  description: 'Restaura snapshot '
+  description: 'Busca instâncias com nome no padrão app-<número> e remove as VMs encontradas via CLI da MGC.'
   executionEnabled: true
   id: delete-targets
   loglevel: INFO
@@ -21,6 +21,13 @@
       passSecureInput: 'false'
       script: |-
         #!/bin/bash
+        # ==============================================================================
+        # Script: apaga-as-instancias-de-aplica-o
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Remove instâncias app-<número> do ambiente usando a CLI da MGC
+        # version 001
+        # ==============================================================================
 
         export MGC_AUTH_TYPE=api-key
         API_KEY="$RD_OPTION_MGCAPIKEY"  # ou defina manualmente

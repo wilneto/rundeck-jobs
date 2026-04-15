@@ -1,6 +1,5 @@
 - defaultTab: output
-  description: "Varre o ambiente procurando por VMs que tenhham APP no nome, deleta\
-    \ e atualiza os nós do Grafana \n"
+  description: "Remove instâncias com nome no padrão app-<número> e reconstrói o arquivo de targets do Prometheus com os IPs restantes do ambiente.\n"
   executionEnabled: true
   id: remove-instances-and-update-grafana
   loglevel: INFO
@@ -22,6 +21,13 @@
       passSecureInput: 'false'
       script: |-
         #!/bin/bash
+        # ==============================================================================
+        # Script: remove-instances-and-update-grafana
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Remove instâncias app-<número> e atualiza os targets do Prometheus
+        # version 001
+        # ==============================================================================
         set -e
 
         export MGC_AUTH_TYPE=api-key

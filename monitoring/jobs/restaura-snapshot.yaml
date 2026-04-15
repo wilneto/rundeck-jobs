@@ -1,5 +1,5 @@
 - defaultTab: output
-  description: 'Restaura snapshot '
+  description: 'Procura um snapshot com nome contendo app- e restaura uma nova instância via CLI da MGC.'
   executionEnabled: true
   id: restaura-targets
   loglevel: INFO
@@ -21,6 +21,13 @@
       passSecureInput: 'false'
       script: |-
         #!/bin/bash
+        # ==============================================================================
+        # Script: restaura-snapshot
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Restaura uma VM a partir de um snapshot app-* usando a CLI da MGC
+        # version 001
+        # ==============================================================================
 
         set -e
 

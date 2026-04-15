@@ -1,5 +1,5 @@
 - defaultTab: output
-  description: Cria um Load Balancer na MGC com base nas instâncias atuais
+  description: Cria um Load Balancer externo na MGC usando como targets as instâncias app-* disponíveis no ambiente.
   executionEnabled: true
   id: create-lb-cpen5-se
   loglevel: INFO
@@ -21,6 +21,13 @@
       passSecureInput: 'false'
       script: |
         #!/bin/bash
+        # ==============================================================================
+        # Script: criar-load-balancer-cpen5-se
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Cria um Load Balancer com backend, health check e listener para VMs app-*
+        # version 001
+        # ==============================================================================
         export MGC_AUTH_TYPE=api-key
         MGCAPIKEY=$RD_OPTION_MGCAPIKEY
         VPC_ID=$(mgc network vpcs list --api-key="$MGCAPIKEY" --output json | \

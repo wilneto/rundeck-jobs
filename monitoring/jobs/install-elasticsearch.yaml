@@ -1,5 +1,5 @@
 - defaultTab: nodes
-  description: ''
+  description: 'Instala o Elasticsearch no host, habilita o serviço no systemd e valida a API local após a inicialização.'
   executionEnabled: true
   id: 8e0c9550-e357-47f1-b0a5-a04ccf43334f
   loglevel: INFO
@@ -14,6 +14,13 @@
       passSecureInput: 'false'
       script: |-
         #!/bin/bash
+        # ==============================================================================
+        # Script: install-elasticsearch
+        # Autor: Wilson Lucena
+        # Data: 2026-04-14
+        # Descrição: Instala o Elasticsearch no host, habilita o serviço e valida a API local
+        # version 001
+        # ==============================================================================
         set -e
 
         echo "🔧 Instalando dependências..."
